@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+venv/
+*.log
+*.err
+
+# model weights (4.6 GB — see local_gpu/models/README.md)
+local_gpu/models/*.pt
+
+# data trees live next to the code, never in git
+viewer/scenes/
+street_video/
+inspector/jobs/
+inspector/inspector.db
+demo_out/
+
+# dotnet build output
+deskview/bin/
+deskview/obj/

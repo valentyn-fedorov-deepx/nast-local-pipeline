@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>NAST recorder — відео + ROI</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d10;color:#dfe6ee;font:13px/1.45 system-ui,Segoe UI,sans-serif;overflow:hidden}
+  #stage{position:fixed;inset:0 0 76px 0;display:flex;align-items:center;justify-content:center}
+  #cv{max-width:100%;max-height:100%;cursor:crosshair;background:#000}
+  .panel{position:fixed;background:rgba(16,19,24,.88);border:1px solid #2a3138;border-radius:10px;
+         padding:10px 12px;backdrop-filter:blur(6px);user-select:none}
+  #hud{top:12px;left:12px;width:250px}
+  #hud h1{margin:0 0 8px;font-size:14px;font-weight:600}
+  .row{display:flex;align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap}
+  .row label{flex:0 0 64px;color:#93a2b2;font-size:11.5px}
+  .btn{background:#1d2530;border:1px solid #2f3945;color:#dfe6ee;border-radius:7px;
+       padding:5px 9px;cursor:pointer;font-size:12px}
+  .btn:hover{background:#26313e}
+  .btn.on{background:#2b6cb0;border-color:#3d8bd8}
+  #bar{position:fixed;left:0;right:0;bottom:0;height:76px;background:rgba(13,16,20,.96);
+       border-top:1px solid #232b33;display:flex;align-items:center;gap:10px;padding:0 14px}
+  #tl{flex:1;height:22px}
+  input[type=range]{accent-color:#4da3ff}
+  #rois{top:12px;right:12px;width:270px;max-height:60vh;overflow:auto}
+  .roi-item{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;margin:3px 0;background:#161b22}
+  .roi-item b{flex:1;font-weight:500;font-size:12px}
+  .roi-item span{color:#93a2b2;font-size:11px}
+  .roi-x{color:#ff7b7b;cursor:pointer;padding:0 4px}
+  .tag{display:inline-block;padding:1px 6px;border-radius:5px;background:#1d2530;color:#93a2b2;font-size:11px}
+  kbd{background:#1d2530;border:1px solid #333d49;border-bottom-width:2px;border-radius:4px;
+      padding:0 4px;font:11px ui-monospace,monospace;color:#c8d4e0}
+  #help{bottom:90px;left:12px;color:#7d8b9a;font-size:11.5px;line-height:1.7;max-width:250px}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+
+<div id="hud" class="panel">
+  <h1>NAST recorder</h1>
+  <div class="row"><label>камера</label>
+    <button class="btn on" id="camA">A</button>
+    <button class="btn" id="camB">B</button>
+  </div>
+  <div class="row"><label>шар</label>
+    <button class="btn on" id="lRgb">RGB</button>
+    <button class="btn" id="lNxyz">nxyz</button>
+  </div>
+  <div class="row"><label>ROI</label>
+    <button class="btn" id="tRect">▭</button>
+    <button class="btn" id="tCirc">◯</button>
+    <button class="btn" id="tPoly">✎ контур</button>
+  </div>
+  <div class="row">
+    <button class="btn" id="exp">експорт JSON</button>
+    <button class="btn" id="clr">очистити кадр</button>
+  </div>
+  <div class="row"><span class="tag" id="stat">…</span></div>
+</div>
+
+<div id="rois" class="panel">
+  <b style="font-size:13px">Позначені ROI</b>
+  <div id="roiList"></div>
+</div>
+
+<div id="help" class="panel">
+  <kbd>Space</kbd> пуск/пауза · <kbd>←</kbd><kbd>→</kbd> покадрово<br>
+  <kbd>Shift+←→</kbd> стрибок ×20 · <kbd>1</kbd>/<kbd>2</kbd> RGB/nxyz<br>
+  інструмент ROI: тягни мишею; контур — кліки, <kbd>Enter</kbd> замкнути<br>
+  <kbd>Esc</kbd> скасувати малювання
+</div>
+
+<div id="bar">
+  <button class="btn" id="play">▶</button>
+  <button class="btn" id="stepB">⏮</button>
+  <button class="btn" id="stepF">⏭</button>
+  <input type="range" id="tl" min="0" max="100" step="1" value="0">
+  <span class="tag" id="tlab" style="min-width:110px;text-align:center">0 / 0</span>
+  <select id="speed" class="btn">
+    <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option><option value="2">2×</option>
+    <option value="4">4×</option><option value="8">8×</option>
+  </select>
+</div>
+
+<script>
+// ---------------------------------------------------------------- data
+let FRAMES = [], A_IDX = [], B_IDX = [];    // global frame names + per-camera index lists
+const S = {
+  cam: 'A', layer: 'rgb', playing: false, pos: 0, speed: 1,
+  tool: null, drawing: null,               // drawing = {kind, pts:[..]} in image coords
+  rois: [],                                 // {id, frame, cam, kind, pts, label}
+};
+const FPS_BASE = 8;                         // recorded at ~8 fps per camera
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let IMW = 1024, IMH = 1224;                 // upright size (frames are stored sideways)
+
+// LRU image cache; frames are rotated on draw, files stay untouched
+const cache = new Map();
+const CACHE_MAX = 220;
+function getImage(name, layer){
+  const key = layer + '/' + name;
+  if (cache.has(key)){ const v = cache.get(key); cache.delete(key); cache.set(key, v); return v; }
+  const im = new Image();
+  im.src = layer + '/' + name;
+  cache.set(key, im);
+  if (cache.size > CACHE_MAX){ cache.delete(cache.keys().next().value); }
+  return im;
+}
+function prefetch(){
+  const list = S.cam === 'A' ? A_IDX : B_IDX;
+  for (let d = 1; d <= 24; d++){
+    const i = S.pos + d;
+    if (i >= list.length) break;
+    getImage(FRAMES[list[i]], S.layer);
+  }
+}
+
+// ---------------------------------------------------------------- draw
+function curName(){
+  const list = S.cam === 'A' ? A_IDX : B_IDX;
+  return FRAMES[list[Math.min(S.pos, list.length-1)]];
+}
+function draw(){
+  const name = curName();
+  if (!name) return;
+  const im = getImage(name, S.layer);
+  if (!im.complete || !im.naturalWidth){ im.onload = () => draw(); return; }
+  // stored sideways (WxH = 1224x1024): rotate CW to upright on the canvas
+  IMW = im.naturalHeight; IMH = im.naturalWidth;
+  if (cv.width !== IMW || cv.height !== IMH){ cv.width = IMW; cv.height = IMH; }
+  ctx.save();
+  ctx.translate(IMW, 0); ctx.rotate(Math.PI/2);
+  ctx.drawImage(im, 0, 0);
+  ctx.restore();
+  drawRois(name);
+  drawCurrent();
+  document.getElementById('tlab').textContent =
+    `${S.pos} / ${(S.cam==='A'?A_IDX:B_IDX).length-1}`;
+  document.getElementById('tl').value = S.pos;
+  document.getElementById('stat').textContent =
+    `${S.cam} · ${S.layer} · ${name.slice(2, 21)}`;
+}
+function shapePath(r){
+  ctx.beginPath();
+  if (r.kind === 'rect'){
+    const [a, b] = r.pts;
+    ctx.rect(Math.min(a[0],b[0]), Math.min(a[1],b[1]), Math.abs(b[0]-a[0]), Math.abs(b[1]-a[1]));
+  } else if (r.kind === 'circle'){
+    const [c, e] = r.pts;
+    ctx.arc(c[0], c[1], Math.hypot(e[0]-c[0], e[1]-c[1]), 0, Math.PI*2);
+  } else {
+    r.pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    ctx.closePath();
+  }
+}
+function drawRois(name){
+  const t = performance.now()/1000;
+  for (const r of S.rois){
+    if (r.frame !== name) continue;
+    const pulse = 0.55 + 0.45*Math.sin(t*4);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = `rgba(80,220,120,${pulse})`;
+    ctx.fillStyle = 'rgba(80,220,120,0.10)';
+    shapePath(r); ctx.fill(); ctx.stroke();
+    const p0 = r.pts[0];
+    ctx.font = 'bold 20px system-ui';
+    ctx.fillStyle = `rgba(120,255,160,${pulse})`;
+    ctx.fillText(r.label, p0[0]+6, p0[1]-8);
+  }
+}
+function drawCurrent(){
+  const d = S.drawing;
+  if (!d || d.pts.length < 1) return;
+  ctx.lineWidth = 2.5; ctx.setLineDash([8,6]);
+  ctx.strokeStyle = 'rgba(255,200,80,0.95)';
+  shapePath({kind: d.kind, pts: d.kind==='poly' ? d.pts : d.pts.slice(0,2)});
+  ctx.stroke(); ctx.setLineDash([]);
+}
+
+// ---------------------------------------------------------------- playback
+let lastT = performance.now(), acc = 0;
+function tick(now){
+  const dt = (now - lastT)/1000; lastT = now;
+  if (S.playing){
+    acc += dt * FPS_BASE * S.speed;
+    const steps = Math.floor(acc);
+    if (steps > 0){
+      acc -= steps;
+      const list = S.cam === 'A' ? A_IDX : B_IDX;
+      S.pos = Math.min(S.pos + steps, list.length-1);
+      if (S.pos >= list.length-1){ S.playing = false; document.getElementById('play').textContent='▶'; }
+      prefetch();
+    }
+  }
+  draw();
+  requestAnimationFrame(tick);
+}
+
+// ---------------------------------------------------------------- ROI tools
+function evToImg(e){
+  const r = cv.getBoundingClientRect();
+  return [ (e.clientX - r.left) * (cv.width / r.width),
+           (e.clientY - r.top) * (cv.height / r.height) ];
+}
+cv.addEventListener('mousedown', e => {
+  if (!S.tool) return;
+  const p = evToImg(e);
+  if (S.tool === 'poly'){
+    if (!S.drawing) S.drawing = {kind:'poly', pts:[]};
+    S.drawing.pts.push(p);
+  } else {
+    S.drawing = {kind: S.tool, pts: [p, p]};
+    const move = ev => { S.drawing.pts[1] = evToImg(ev); };
+    const up = ev => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      S.drawing.pts[1] = evToImg(ev);
+      commitRoi();
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }
+});
+function commitRoi(){
+  const d = S.drawing; S.drawing = null;
+  if (!d) return;
+  if (d.kind !== 'poly' && Math.hypot(d.pts[1][0]-d.pts[0][0], d.pts[1][1]-d.pts[0][1]) < 6) return;
+  if (d.kind === 'poly' && d.pts.length < 3) return;
+  const id = 'R' + (S.rois.length + 1);
+  S.rois.push({id, frame: curName(), cam: S.cam, kind: d.kind,
+               pts: d.pts.map(p => [Math.round(p[0]), Math.round(p[1])]), label: id});
+  saveRois(); renderRoiList();
+}
+function saveRois(){ localStorage.setItem('nast_rois', JSON.stringify(S.rois)); }
+function loadRois(){
+  try { S.rois = JSON.parse(localStorage.getItem('nast_rois')) || []; } catch(e){ S.rois = []; }
+}
+function renderRoiList(){
+  const el = document.getElementById('roiList');
+  el.innerHTML = '';
+  for (const r of S.rois){
+    const div = document.createElement('div');
+    div.className = 'roi-item';
+    div.innerHTML = `<b>${r.label}</b><span>${r.kind} · ${r.cam} · к.${frameShort(r.frame)}</span>`;
+    const go = document.createElement('button');
+    go.className = 'btn'; go.textContent = '→';
+    go.onclick = () => { jumpTo(r); };
+    const x = document.createElement('span');
+    x.className = 'roi-x'; x.textContent = '✕';
+    x.onclick = () => { S.rois = S.rois.filter(q => q !== r); saveRois(); renderRoiList(); };
+    div.appendChild(go); div.appendChild(x);
+    el.appendChild(div);
+  }
+}
+function frameShort(n){ return n.slice(14, 22); }
+function jumpTo(r){
+  S.cam = r.cam;
+  document.getElementById('camA').classList.toggle('on', r.cam==='A');
+  document.getElementById('camB').classList.toggle('on', r.cam==='B');
+  const list = r.cam === 'A' ? A_IDX : B_IDX;
+  const gi = FRAMES.indexOf(r.frame);
+  const pos = list.indexOf(gi);
+  if (pos >= 0){ S.pos = pos; }
+  document.getElementById('tl').max = list.length - 1;
+  S.playing = false; document.getElementById('play').textContent='▶';
+  prefetch();
+}
+
+// ---------------------------------------------------------------- UI wiring
+function setTool(t, btn){
+  S.tool = (S.tool === t) ? null : t;
+  for (const id of ['tRect','tCirc','tPoly'])
+    document.getElementById(id).classList.remove('on');
+  if (S.tool) btn.classList.add('on');
+  S.drawing = null;
+}
+document.getElementById('tRect').onclick = e => setTool('rect', e.target);
+document.getElementById('tCirc').onclick = e => setTool('circle', e.target);
+document.getElementById('tPoly').onclick = e => setTool('poly', e.target);
+document.getElementById('camA').onclick = () => switchCam('A');
+document.getElementById('camB').onclick = () => switchCam('B');
+function switchCam(c){
+  S.cam = c;
+  document.getElementById('camA').classList.toggle('on', c==='A');
+  document.getElementById('camB').classList.toggle('on', c==='B');
+  const list = c === 'A' ? A_IDX : B_IDX;
+  S.pos = Math.min(S.pos, list.length-1);
+  document.getElementById('tl').max = list.length-1;
+  prefetch();
+}
+document.getElementById('lRgb').onclick = () => switchLayer('rgb');
+document.getElementById('lNxyz').onclick = () => switchLayer('nxyz');
+function switchLayer(l){
+  S.layer = l;
+  document.getElementById('lRgb').classList.toggle('on', l==='rgb');
+  document.getElementById('lNxyz').classList.toggle('on', l==='nxyz');
+  prefetch();
+}
+document.getElementById('play').onclick = () => {
+  S.playing = !S.playing;
+  document.getElementById('play').textContent = S.playing ? '❚❚' : '▶';
+};
+document.getElementById('stepF').onclick = () => { S.pos++; clampPos(); };
+document.getElementById('stepB').onclick = () => { S.pos--; clampPos(); };
+function clampPos(){
+  const list = S.cam === 'A' ? A_IDX : B_IDX;
+  S.pos = Math.max(0, Math.min(S.pos, list.length-1));
+  prefetch();
+}
+document.getElementById('tl').oninput = e => { S.pos = +e.target.value; clampPos(); };
+document.getElementById('speed').onchange = e => S.speed = +e.target.value;
+document.getElementById('exp').onclick = () => {
+  const blob = new Blob([JSON.stringify({rois: S.rois}, null, 1)], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'rois.json';
+  a.click();
+};
+document.getElementById('clr').onclick = () => {
+  const n = curName();
+  S.rois = S.rois.filter(r => r.frame !== n);
+  saveRois(); renderRoiList();
+};
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space'){ e.preventDefault(); document.getElementById('play').onclick(); }
+  else if (e.key === 'ArrowRight'){ S.pos += e.shiftKey ? 20 : 1; clampPos(); }
+  else if (e.key === 'ArrowLeft'){ S.pos -= e.shiftKey ? 20 : 1; clampPos(); }
+  else if (e.key === '1'){ switchLayer('rgb'); }
+  else if (e.key === '2'){ switchLayer('nxyz'); }
+  else if (e.key === 'Enter' && S.drawing && S.drawing.kind === 'poly'){ commitRoi(); }
+  else if (e.key === 'Escape'){ S.drawing = null; }
+});
+
+// ---------------------------------------------------------------- boot
+(async function(){
+  const fr = await (await fetch('frames.json')).json();
+  FRAMES = fr.frames;
+  FRAMES.forEach((n, i) => (n[0] === 'A' ? A_IDX : B_IDX).push(i));
+  document.getElementById('tl').max = A_IDX.length - 1;
+  loadRois(); renderRoiList();
+  prefetch();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

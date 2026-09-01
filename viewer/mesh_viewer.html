@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Deskview object · mesh</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d10;color:#dfe6ee;font:13px/1.45 system-ui,Segoe UI,sans-serif;overflow:hidden}
+  #gl{display:block;width:100vw;height:100vh;cursor:grab;background:#0b0d10}
+  #gl:active{cursor:grabbing}
+  .panel{position:fixed;background:rgba(16,19,24,.86);border:1px solid #2a3138;border-radius:10px;
+         padding:10px 12px;backdrop-filter:blur(6px);user-select:none}
+  #hud{top:12px;left:12px;min-width:250px}
+  #hud h1{margin:0 0 8px;font-size:14px;font-weight:600;letter-spacing:.02em}
+  .row{display:flex;align-items:center;gap:8px;margin:6px 0}
+  .row label{flex:0 0 74px;color:#93a2b2;font-size:11.5px}
+  input[type=range]{flex:1;accent-color:#4da3ff;height:16px}
+  .btn{background:#1d2530;border:1px solid #2f3945;color:#dfe6ee;border-radius:7px;
+       padding:5px 9px;cursor:pointer;font-size:12px}
+  .btn:hover{background:#26313e}
+  .btn.on{background:#2b6cb0;border-color:#3d8bd8}
+  #stats{top:12px;right:12px;text-align:right;font-variant-numeric:tabular-nums;color:#93a2b2}
+  #stats b{color:#dfe6ee;font-weight:600}
+  #help{bottom:14px;left:12px;color:#7d8b9a;font-size:11.5px;line-height:1.7}
+  kbd{background:#1d2530;border:1px solid #333d49;border-bottom-width:2px;border-radius:4px;
+      padding:0 4px;font:11px ui-monospace,monospace;color:#c8d4e0}
+  #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+        flex-direction:column;gap:14px;background:#0b0d10;z-index:9}
+  .tag{display:inline-block;padding:1px 6px;border-radius:5px;background:#1d2530;color:#93a2b2;font-size:11px}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="load"><div style="font-size:15px">loading mesh…</div><div id="loadtxt" class="tag">…</div></div>
+
+<div id="hud" class="panel">
+  <h1>Object · mesh</h1>
+  <div class="row"><label>layer</label><select id="cset" class="btn" style="flex:1"></select></div>
+  <div class="row" id="structRow" style="display:none"><label>struct</label><select id="structsel" class="btn" style="flex:1">
+    <option value="0">Mesh</option>
+    <option value="3">Sketch</option><option value="4">Skeleton</option><option value="5">Exploded</option></select></div>
+  <div class="row" id="explodeRow" style="display:none"><label>explode</label><input id="explode" type="range" min="0" max="1" step="0.01" value="0" style="flex:1"></div>
+  <div class="row"><label>shading</label>
+    <button class="btn on" id="shLit">Lit</button>
+    <button class="btn" id="shFlat">Unlit</button>
+    <button class="btn" id="shWire">Wire</button>
+  </div>
+  <div class="row"><label>exposure</label><input type="range" id="exposure" min="0.4" max="3" step="0.05" value="1.0"></div>
+  <div class="row"><label>backdrop</label>
+    <button class="btn on" id="bgDark">Dark</button>
+    <button class="btn" id="bgGrey">Grey</button>
+    <button class="btn" id="bgLight">Light</button>
+  </div>
+  <div class="row">
+    <button class="btn" id="reset">Reset view</button>
+    <button class="btn" id="spin">Turntable</button>
+    <button class="btn" id="toSplat" title="gaussian-splat rendering of this object">Gaussians</button>
+  </div>
+</div>
+
+
+<div id="rv" class="panel" style="top:0;right:0;bottom:0;width:50vw;max-width:none;display:none;border-radius:0;overflow:auto">
+  <div class="row" style="margin:0 0 6px"><label style="flex:0 0 auto">real view</label>
+    <select id="rvLayer" class="btn" style="flex:1"></select>
+    <label class="btn" style="flex:0 0 auto;display:flex;align-items:center;gap:5px"><input type="checkbox" id="rvFollow" checked> follow 3D</label></div>
+  <div id="rvWrap" style="width:100%;aspect-ratio:1.195;overflow:hidden;border-radius:6px;background:#000;cursor:grab;position:relative">
+    <img id="rvImg" draggable="false" style="width:100%;display:block;transform-origin:0 0;user-select:none">
+    <div id="rvZoomTag" class="tag" style="position:absolute;right:6px;bottom:6px;display:none">1.0×</div>
+  </div>
+  <div id="rvInfo" class="tag" style="margin-top:6px;display:block"></div>
+  <div class="row" style="margin:6px 0 0"><button class="btn" id="rvPrev">‹ prev</button><button class="btn" id="rvNext">next ›</button>
+    <button class="btn" id="rvSnap">snap 3D to this view</button></div>
+</div>
+
+<div id="stats" class="panel">
+  <div><b id="fps">–</b> fps</div>
+  <div><span id="total">–</span> triangles</div>
+</div>
+
+<div id="help" class="panel">
+  <kbd>LMB</kbd> rotate · <kbd>RMB</kbd> pan · <kbd>wheel</kbd> zoom · <kbd>1</kbd>…<kbd>9</kbd> layer · <kbd>L</kbd> lit/unlit · <kbd>R</kbd> reset · <kbd>T</kbd> turntable
+</div>
+
+<script>
+const V = { target:[0,0,0], dist:2.4, yaw:0.45, pitch:0.15, exposure:1.0, shading:0, spin:false, set:0 };
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', {antialias:true});
+if (!gl) alert('WebGL2 is not available');
+
+const VS = `#version 300 es
+precision highp float;
+in vec3 aPos; in vec3 aNrm; in vec3 aCol;
+uniform mat4 uProj, uView;
+out vec3 vCol; out vec3 vNrmV; out vec3 vPosV;
+void main(){
+  vec4 pv = uView * vec4(aPos, 1.0);
+  vPosV = pv.xyz;
+  vNrmV = mat3(uView) * aNrm;
+  vCol = aCol;
+  gl_PointSize = 3.0;
+  gl_Position = uProj * pv;
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec3 vCol; in vec3 vNrmV; in vec3 vPosV; out vec4 o;
+uniform float uExposure; uniform int uShading;
+void main(){
+  vec3 c = vCol * uExposure;
+  if (uShading == 0){
+    vec3 n = normalize(vNrmV);
+    if (!gl_FrontFacing) n = -n;
+    vec3 l = normalize(vec3(0.35, 0.6, 1.0));          // headlight-ish, slightly above
+    float d = max(dot(n, l), 0.0);
+    vec3 vdir = normalize(-vPosV);
+    float s = pow(max(dot(reflect(-l, n), vdir), 0.0), 24.0) * 0.25;
+    c = c * (0.35 + 0.65 * d) + vec3(s);
+  } else if (uShading == 2){
+    c = vec3(0.75, 0.85, 1.0);
+  }
+  o = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
+function sh(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const U = n => gl.getUniformLocation(prog, n);
+gl.enable(gl.DEPTH_TEST);
+
+const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+const bPos = gl.createBuffer(), bNrm = gl.createBuffer(), bCol = gl.createBuffer(), bIdx = gl.createBuffer(), bLine = gl.createBuffer();
+let nLine = 0;
+function attr(buf, loc, data){ gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0); }
+let nIdx = 0, SETS = [], colCache = {};
+const aCol = gl.getAttribLocation(prog, 'aCol');
+
+// ---------------------------------------------------------------- math / camera
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const scale=(a,s)=>[a[0]*s,a[1]*s,a[2]*s], dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const norm=a=>{const l=Math.hypot(a[0],a[1],a[2])||1; return [a[0]/l,a[1]/l,a[2]/l];};
+function lookAt(eye, target, up){           // OpenGL camera (looks along -z)
+  const z = norm(sub(eye, target)), x = norm(cross(up, z)), y = cross(z, x);
+  return new Float32Array([x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0, -dot(x,eye), -dot(y,eye), -dot(z,eye), 1]);
+}
+function perspective(fovy, aspect, n, f){ const t = 1/Math.tan(fovy/2);
+  return new Float32Array([t/aspect,0,0,0, 0,t,0,0, 0,0,(f+n)/(n-f),-1, 0,0,2*f*n/(n-f),0]); }
+const UPV = [0,1,0];
+function orbitDir(){ const cp=Math.cos(V.pitch), sp=Math.sin(V.pitch); return norm([cp*Math.sin(V.yaw), sp, cp*Math.cos(V.yaw)]); }
+
+// ---------------------------------------------------------------- input
+let drag = null;
+canvas.addEventListener('mousedown', e => { drag = {x:e.clientX, y:e.clientY, btn:e.button}; if (e.button===2) e.preventDefault(); });
+window.addEventListener('mouseup', () => drag = null);
+window.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const dx = e.clientX-drag.x, dy = e.clientY-drag.y; drag.x=e.clientX; drag.y=e.clientY;
+  if (drag.btn===0){ V.yaw -= dx*0.005; V.pitch = Math.max(-1.45, Math.min(1.45, V.pitch + dy*0.005)); V.spin=false; spinBtn.classList.remove('on'); }
+  else { const f = V.dist*0.0016, fwd = orbitDir(), right = norm(cross(UPV, fwd)), up2 = norm(cross(fwd, right));
+    V.target = add(V.target, add(scale(right, -dx*f), scale(up2, dy*f))); }
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('wheel', e => { e.preventDefault(); V.dist *= Math.exp(e.deltaY*0.0012); V.dist = Math.max(0.15, Math.min(12, V.dist)); }, {passive:false});
+function resetView(){ V.target=[0,0,0]; V.dist=2.4; V.yaw=0.45; V.pitch=0.15; }
+document.getElementById('reset').onclick = resetView;
+const spinBtn = document.getElementById('spin');
+spinBtn.onclick = () => { V.spin = !V.spin; spinBtn.classList.toggle('on', V.spin); };
+document.getElementById('toSplat').onclick = () => { location.href = 'splat.html'; };
+const csel = document.getElementById('cset');
+csel.onchange = () => setSet(+csel.value);
+function setShading(i){ V.shading = i; for (const [k,id] of [[0,'shLit'],[1,'shFlat'],[2,'shWire']]) document.getElementById(id).classList.toggle('on', k===i); }
+document.getElementById('shLit').onclick = () => setShading(0);
+document.getElementById('shFlat').onclick = () => setShading(1);
+document.getElementById('shWire').onclick = () => setShading(2);
+document.getElementById('exposure').oninput = e => V.exposure = +e.target.value;
+for (const [id, col] of [['bgDark','#0b0d10'],['bgGrey','#4c4f54'],['bgLight','#e6e6e3']])
+  document.getElementById(id).onclick = () => { canvas.style.background = col; for (const k of ['bgDark','bgGrey','bgLight']) document.getElementById(k).classList.toggle('on', k===id); };
+window.addEventListener('keydown', e => {
+  if (e.key>='1' && e.key<='9') setSet(+e.key-1);
+  if (e.key==='r' || e.key==='R') resetView();
+  if (e.key==='t' || e.key==='T') spinBtn.click();
+  if (e.key==='l' || e.key==='L') setShading(V.shading===0 ? 1 : 0);
+});
+function resize(){ const dpr = Math.min(window.devicePixelRatio||1, 2);
+  const half = (document.getElementById('rv') || {style:{display:'none'}}).style.display !== 'none';
+  canvas.width = Math.floor(innerWidth*(half?0.5:1)*dpr); canvas.height = Math.floor(innerHeight*dpr);
+  canvas.style.width = half ? '50vw' : '100vw'; canvas.style.height = '100vh'; }
+window.addEventListener('resize', resize); resize();
+
+async function setSet(i){
+  if (!SETS[i]) return;
+  V.set = i; csel.value = String(i);
+  // normal-like layers read best unlit; RGB lit
+  setShading(/nxyz|phys|diffuse|specv2|deglare|xy|xz/i.test(SETS[i].name) ? 1 : 0);
+  if (!colCache[i]){
+    const r = await fetch(SETS[i].file); const u8 = new Uint8Array(await r.arrayBuffer());
+    const f = new Float32Array(u8.length); for (let k=0;k<u8.length;k++) f[k] = u8[k]/255;
+    colCache[i] = f;
+  }
+  gl.bindVertexArray(vao); attr(bCol, aCol, colCache[i]);
+}
+
+// ------------------------------------------------- structure layers (generic)
+let STRUCT = null, structMode = 0, basePos = null, dispArr = null;
+const svao = {};
+function makeVao(pos, nrm, col, idx){
+  const v = gl.createVertexArray(); gl.bindVertexArray(v);
+  for (const [name, data] of [['aPos', pos], ['aNrm', nrm]]){
+    const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    const l = gl.getAttribLocation(prog, name); gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, 3, gl.FLOAT, false, 0, 0);
+  }
+  const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, col, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(aCol); gl.vertexAttribPointer(aCol, 3, gl.FLOAT, false, 0, 0);
+  let n = pos.length / 3, indexed = false;
+  if (idx){ const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW); n = idx.length; indexed = true; }
+  gl.bindVertexArray(vao);
+  return {vao: v, n, indexed};
+}
+const flat = (n, r, g, b) => { const f = new Float32Array(n * 3); for (let i = 0; i < n; i++){ f[i*3] = r; f[i*3+1] = g; f[i*3+2] = b; } return f; };
+async function loadStructMode(m){
+  if (svao[m]) return svao[m];
+  if (m === 1 || m === 2){
+    const tag = m === 1 ? 'shell1' : 'shell2';
+    const [p, nr, ix] = await Promise.all([`layer_${tag}.pos.f32`, `layer_${tag}.nrm.f32`, `layer_${tag}.idx.u32`].map(async f => (await fetch(f)).arrayBuffer()));
+    const pos = new Float32Array(p);
+    const col = m === 1 ? flat(pos.length/3, .59, .75, .90) : flat(pos.length/3, .90, .67, .47);
+    svao[m] = {...makeVao(pos, new Float32Array(nr), col, new Uint32Array(ix)), prim: gl.TRIANGLES, shading: 0};
+  } else if (m === 3){
+    if (STRUCT && STRUCT.contour && STRUCT.contour.n > 0){
+      const ct = STRUCT.contour;
+      const [pp, na, nb, cc] = await Promise.all([ct.pos, ct.na, ct.nb, ct.col].map(async f => (await fetch(f)).arrayBuffer()));
+      let fl = new Float32Array(0);
+      try { fl = new Float32Array(await (await fetch(STRUCT.floor)).arrayBuffer()); } catch(e){}
+      const E = ct.n;
+      const v = gl.createVertexArray(); gl.bindVertexArray(v);
+      const cap = E * 2 * 3;
+      const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.bufferData(gl.ARRAY_BUFFER, cap * 4, gl.DYNAMIC_DRAW);
+      const lp = gl.getAttribLocation(prog, 'aPos'); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 0, 0);
+      const nb2 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, nb2); gl.bufferData(gl.ARRAY_BUFFER, cap * 4, gl.STATIC_DRAW);
+      const ln = gl.getAttribLocation(prog, 'aNrm'); gl.enableVertexAttribArray(ln); gl.vertexAttribPointer(ln, 3, gl.FLOAT, false, 0, 0);
+      const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, cap * 4, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(aCol); gl.vertexAttribPointer(aCol, 3, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(vao);
+      // static floor VAO
+      let floorVao = null, floorN = 0;
+      if (fl.length){
+        floorVao = makeVao(fl, new Float32Array(fl.length), flat(fl.length/3, 0.24, 0.27, 0.31), null).vao;
+        floorN = fl.length / 3;
+      }
+      svao[m] = {dyn: true, vao: v, posBuf: pb, colBuf: cb,
+                 epos: new Float32Array(pp), ena: new Float32Array(na), enb: new Float32Array(nb), ecol: new Float32Array(cc),
+                 scratchP: new Float32Array(cap), scratchC: new Float32Array(cap),
+                 E, n: 0, lastKey: '', floorVao, floorN, prim: gl.LINES, shading: 1};
+      return svao[m];
+    }
+    let pos, col;
+    try {
+      const sp = new Float32Array(await (await fetch(STRUCT.splines.seg)).arrayBuffer());
+      const sc = new Float32Array(await (await fetch(STRUCT.splines.col)).arrayBuffer());
+      const fl = new Float32Array(await (await fetch(STRUCT.floor)).arrayBuffer());
+      pos = new Float32Array(fl.length + sp.length);
+      pos.set(fl, 0); pos.set(sp, fl.length);
+      col = new Float32Array(pos.length);
+      for (let i = 0; i < fl.length; i += 3){ col[i] = 0.24; col[i+1] = 0.27; col[i+2] = 0.31; }
+      col.set(sc, fl.length);
+    } catch (e){
+      pos = new Float32Array(await (await fetch('struct_creases.f32')).arrayBuffer());
+      col = flat(pos.length/3, .31, .86, 1.0);
+    }
+    svao[m] = {...makeVao(pos, new Float32Array(pos.length), col, null), prim: gl.LINES, shading: 1};
+  } else if (m === 5){
+    const ec = STRUCT.explode_cut;
+    const [pp, nn, cc8, dd] = await Promise.all([ec.pos, ec.nrm, ec.col, ec.disp].map(async f => (await fetch(f)).arrayBuffer()));
+    const pos = new Float32Array(pp);
+    const c8 = new Uint8Array(cc8); const col = new Float32Array(c8.length);
+    for (let i = 0; i < c8.length; i++) col[i] = c8[i]/255;
+    const v = gl.createVertexArray(); gl.bindVertexArray(v);
+    const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.DYNAMIC_DRAW);
+    const lp = gl.getAttribLocation(prog, 'aPos'); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 0, 0);
+    for (const [nm2, data] of [['aNrm', new Float32Array(nn)]]){
+      const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+      const l = gl.getAttribLocation(prog, nm2); gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, 3, gl.FLOAT, false, 0, 0);
+    }
+    const cb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.bufferData(gl.ARRAY_BUFFER, col, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(aCol); gl.vertexAttribPointer(aCol, 3, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(vao);
+    svao[m] = {vao: v, n: pos.length/3, indexed: false, prim: gl.TRIANGLES, shading: 0,
+               posBuf: pb, base: pos, disp: new Float32Array(dd)};
+  } else if (m === 4){
+    const p = new Float32Array(await (await fetch('struct_skel.f32')).arrayBuffer());
+    svao[m] = {...makeVao(p, new Float32Array(p.length), flat(p.length/3, 1.0, .55, .24), null), prim: gl.POINTS, shading: 1};
+  }
+  return svao[m];
+}
+document.getElementById('structsel').onchange = async e => { structMode = +e.target.value; if (structMode > 0) await loadStructMode(structMode); };
+document.getElementById('explode').oninput = e => {
+  const t = +e.target.value;
+  const s5 = svao[5];
+  if (structMode === 5 && s5){
+    const out = new Float32Array(s5.base.length);
+    for (let i = 0; i < out.length; i++) out[i] = s5.base[i] + s5.disp[i] * t;
+    gl.bindVertexArray(s5.vao); gl.bindBuffer(gl.ARRAY_BUFFER, s5.posBuf); gl.bufferData(gl.ARRAY_BUFFER, out, gl.DYNAMIC_DRAW);
+    gl.bindVertexArray(vao);
+    return;
+  }
+  if (!basePos || !dispArr) return;
+  const out = new Float32Array(basePos.length);
+  for (let i = 0; i < out.length; i++) out[i] = basePos[i] + dispArr[i] * t;
+  gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, bPos); gl.bufferData(gl.ARRAY_BUFFER, out, gl.STATIC_DRAW);
+};
+
+// ---------------------------------------------------------------- loop
+let frames = 0, lastFps = performance.now(), lastT = performance.now();
+function frame(now){
+  const dt = (now - lastT)/1000; lastT = now;
+  if (V.spin) V.yaw += dt*0.6;
+  const w = canvas.width, h = canvas.height;
+  gl.viewport(0, 0, w, h); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (nIdx){
+    const proj = perspective(0.7, w/h, 0.05, 50);
+    const eye = add(V.target, scale(orbitDir(), V.dist));
+    const view = lookAt(eye, V.target, UPV);
+    gl.useProgram(prog); gl.bindVertexArray(vao);
+    gl.uniformMatrix4fv(U('uProj'), false, proj); gl.uniformMatrix4fv(U('uView'), false, view);
+    gl.uniform1f(U('uExposure'), V.exposure); gl.uniform1i(U('uShading'), V.shading);
+    if (structMode > 0 && svao[structMode]){
+      const s = svao[structMode];
+      gl.uniform1i(U('uShading'), s.shading);
+      if (s.dyn){
+        const d = orbitDir();
+        const key = d[0].toFixed(3) + ',' + d[1].toFixed(3) + ',' + d[2].toFixed(3);
+        if (key !== s.lastKey){
+          s.lastKey = key;
+          let w = 0;
+          const {epos, ena, enb, ecol, scratchP, scratchC, E} = s;
+          for (let i = 0; i < E; i++){
+            const da = ena[i*3]*d[0] + ena[i*3+1]*d[1] + ena[i*3+2]*d[2];
+            const db = enb[i*3]*d[0] + enb[i*3+1]*d[1] + enb[i*3+2]*d[2];
+            if ((da > 0) !== (db > 0)){
+              const p6 = i*6, c6 = i*6;
+              for (let k = 0; k < 6; k++){ scratchP[w*3 + k] = epos[p6 + k]; scratchC[w*3 + k] = ecol[c6 + k]; }
+              w += 2;
+            }
+          }
+          s.n = w;
+          gl.bindVertexArray(s.vao);
+          gl.bindBuffer(gl.ARRAY_BUFFER, s.posBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, scratchP.subarray(0, w*3));
+          gl.bindBuffer(gl.ARRAY_BUFFER, s.colBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, scratchC.subarray(0, w*3));
+        }
+        if (s.floorVao){ gl.bindVertexArray(s.floorVao); gl.drawArrays(gl.LINES, 0, s.floorN); }
+        gl.bindVertexArray(s.vao);
+        gl.drawArrays(gl.LINES, 0, s.n);
+        gl.bindVertexArray(vao);
+      } else {
+        gl.bindVertexArray(s.vao);
+        if (s.indexed) gl.drawElements(s.prim, s.n, gl.UNSIGNED_INT, 0);
+        else gl.drawArrays(s.prim, 0, s.n);
+        gl.bindVertexArray(vao);
+      }
+    }
+    else if (V.shading === 2){ gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bLine); gl.drawElements(gl.LINES, nLine, gl.UNSIGNED_INT, 0); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdx); }
+    else gl.drawElements(gl.TRIANGLES, nIdx, gl.UNSIGNED_INT, 0);
+  }
+  rvTick();
+  frames++; if (now - lastFps > 500){ document.getElementById('fps').textContent = Math.round(frames*1000/(now-lastFps)); frames=0; lastFps=now; }
+  requestAnimationFrame(frame);
+}
+
+async function boot(){
+  const meta = await (await fetch('mesh.json')).json();
+  SETS = meta.sets || [];
+  const [pos, nrm, idx] = await Promise.all(['mesh_pos.f32','mesh_nrm.f32','mesh_idx.u32'].map(async f => (await fetch(f)).arrayBuffer()));
+  gl.bindVertexArray(vao);
+  attr(bPos, gl.getAttribLocation(prog, 'aPos'), new Float32Array(pos));
+  attr(bNrm, gl.getAttribLocation(prog, 'aNrm'), new Float32Array(nrm));
+  const I = new Uint32Array(idx); nIdx = I.length;
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdx); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, I, gl.STATIC_DRAW);
+  // wireframe index: the three edges of every triangle
+  const L = new Uint32Array(I.length * 2);
+  for (let t = 0; t < I.length; t += 3){ const a=I[t], b=I[t+1], c=I[t+2]; L.set([a,b, b,c, c,a], t*2); }
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bLine); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, L, gl.STATIC_DRAW); nLine = L.length;
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdx);
+  document.getElementById('total').textContent = (nIdx/3).toLocaleString();
+  csel.innerHTML = SETS.map((s, i) => `<option value="${i}">${i+1}. ${s.name}</option>`).join('');
+  basePos = new Float32Array(pos);
+  try {
+    STRUCT = await (await fetch('struct.json')).json();
+    document.getElementById('structRow').style.display = '';
+    dispArr = new Float32Array(await (await fetch(STRUCT.explode)).arrayBuffer());
+    if (dispArr.length === basePos.length) document.getElementById('explodeRow').style.display = '';
+  } catch (e) { STRUCT = null; }
+  await setSet(0);
+  document.getElementById('load').style.display = 'none';
+  requestAnimationFrame(frame);
+}
+boot().catch(e => { document.getElementById('loadtxt').textContent = e.message + ' — opening gaussians'; setTimeout(() => location.replace('splat.html'), 800); });
+
+// ---------------------------------------------------------------- real views (split view)
+// views.json: every frame the object was seen in, with the camera direction in
+// THIS viewer's frame -> while you orbit the model, the photo from the nearest
+// real viewpoint shows beside it, in the layer of your choice
+let RV = null, rvCur = -1, rvLock = false;
+const SET2LAYER = {'RGB':'rgb','RGB (baked)':'rgb','RGB deglare':'rgb_deglare','nxyz (kNN)':'nxyz','nxyz (mesh)':'nxyz',
+  'Nxyz':'nxyz','N xy':'n_xy','N xz':'n_xz',
+  'phys':'nxyz_phys','diffuse':'nxyz_diffuse','specv2':'nxyz_specv2','Edge':'edge'};
+const RVNAMES = {rgb:'RGB', rgb_orig:'RGB · original', rgb_deglare:'RGB deglare', nxyz:'Nxyz', n_xy:'N xy', n_xz:'N xz',
+  nxyz_phys:'phys', nxyz_diffuse:'diffuse', nxyz_specv2:'specv2', edge:'Edge'};
+async function rvInit(){
+  try { RV = await (await fetch('views.json')).json(); } catch(e){ RV = null; }
+  if (!RV || !RV.views || !RV.views.length) return;
+  const sel = document.getElementById('rvLayer');
+  sel.innerHTML = RV.layers.map(l => `<option value="${l}">${RVNAMES[l] || l}</option>`).join('');
+  sel.onchange = () => rvShow(rvCur, true);          // layer is independent: view-sync stays on
+  // ---- 2D zoom/pan: wheel to zoom at the cursor, drag to pan, dblclick reset
+  const wrap = document.getElementById('rvWrap'), im = document.getElementById('rvImg'), zt = document.getElementById('rvZoomTag');
+  let Z = {s: 1, tx: 0, ty: 0};
+  function rvApply(){
+    const mw = wrap.clientWidth, mh = wrap.clientHeight;
+    const iw = mw * Z.s, ih = im.naturalHeight ? mw * Z.s * im.naturalHeight / im.naturalWidth : mh * Z.s;
+    Z.tx = Math.min(0, Math.max(mw - iw, Z.tx)); Z.ty = Math.min(0, Math.max(mh - ih, Z.ty));
+    im.style.transform = `translate(${Z.tx}px,${Z.ty}px) scale(${Z.s})`;
+    zt.style.display = Z.s > 1.01 ? 'block' : 'none'; zt.textContent = Z.s.toFixed(1) + '×';
+  }
+  wrap.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = wrap.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const s0 = Z.s; Z.s = Math.min(12, Math.max(1, Z.s * Math.exp(-e.deltaY * 0.0016)));
+    Z.tx = mx - (mx - Z.tx) * Z.s / s0; Z.ty = my - (my - Z.ty) * Z.s / s0;
+    rvApply();
+  }, {passive: false});
+  let rvDrag = null;
+  wrap.addEventListener('mousedown', e => { rvDrag = {x: e.clientX, y: e.clientY}; wrap.style.cursor = 'grabbing'; e.preventDefault(); });
+  window.addEventListener('mousemove', e => { if (!rvDrag) return; Z.tx += e.clientX - rvDrag.x; Z.ty += e.clientY - rvDrag.y; rvDrag = {x: e.clientX, y: e.clientY}; rvApply(); });
+  window.addEventListener('mouseup', () => { rvDrag = null; wrap.style.cursor = 'grab'; });
+  wrap.addEventListener('dblclick', () => { Z = {s: 1, tx: 0, ty: 0}; rvApply(); });
+  im.addEventListener('load', rvApply);
+  document.getElementById('rvPrev').onclick = () => { document.getElementById('rvFollow').checked = false; rvShow((rvCur - 1 + RV.views.length) % RV.views.length, true); };
+  document.getElementById('rvNext').onclick = () => { document.getElementById('rvFollow').checked = false; rvShow((rvCur + 1) % RV.views.length, true); };
+  document.getElementById('rvSnap').onclick = () => { const v = RV.views[rvCur]; if (!v) return; V.yaw = v.yaw; V.pitch = v.pitch; document.getElementById('rvFollow').checked = true; };
+  document.getElementById('rvFollow').onchange = e => { if (e.target.checked) rvLock = false; };
+  document.getElementById('rv').style.display = 'block';
+  resize();
+  const st = document.getElementById('stats'); if (st){ st.style.top = 'auto'; st.style.bottom = '14px'; }
+}
+function rvLayerForSet(){
+  const s = (typeof SETS !== 'undefined' && SETS[V.colorSet !== undefined ? V.colorSet : V.set]) || null;
+  const name = s ? s.name : 'RGB';
+  const l = SET2LAYER[name] || 'rgb';
+  return (RV && RV.layers.includes(l)) ? l : 'rgb';
+}
+function rvShow(i, force){
+  if (!RV || i < 0) return;
+  const sel = document.getElementById('rvLayer');
+  const v = RV.views[i];
+  if (i !== rvCur || force){
+    rvCur = i;
+    document.getElementById('rvImg').src = `views/v${v.i}_${sel.value}.jpg`;
+  }
+  const d = orbitDir();
+  const ang = Math.acos(Math.max(-1, Math.min(1, d[0]*v.dir[0] + d[1]*v.dir[1] + d[2]*v.dir[2]))) * 180/Math.PI;
+  document.getElementById('rvInfo').textContent =
+    `${v.name.slice(0, 26)} · cam ${v.cam} · ${v.auto ? 'auto view' : 'operator ROI'} · ${ang.toFixed(0)}° from the current orbit · ${i+1}/${RV.views.length}`;
+}
+function rvTick(){
+  if (!RV) return;
+  const follow = document.getElementById('rvFollow').checked;
+  if (follow){
+    const d = orbitDir(); let best = -1, bd = -2;
+    RV.views.forEach((v, i) => { const s = d[0]*v.dir[0] + d[1]*v.dir[1] + d[2]*v.dir[2]; if (s > bd){ bd = s; best = i; } });
+    rvShow(best, best !== rvCur);
+  } else if (rvCur >= 0) rvShow(rvCur, false);
+}
+rvInit();
+
+</script>
+</body>
+</html>

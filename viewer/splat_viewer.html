@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Deskview object · gaussians</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d10;color:#dfe6ee;font:13px/1.45 system-ui,Segoe UI,sans-serif;overflow:hidden}
+  #gl{display:block;width:100vw;height:100vh;cursor:grab;background:#0b0d10}
+  #gl:active{cursor:grabbing}
+  .panel{position:fixed;background:rgba(16,19,24,.86);border:1px solid #2a3138;border-radius:10px;
+         padding:10px 12px;backdrop-filter:blur(6px);user-select:none}
+  #hud{top:12px;left:12px;min-width:250px}
+  #hud h1{margin:0 0 8px;font-size:14px;font-weight:600;letter-spacing:.02em}
+  .row{display:flex;align-items:center;gap:8px;margin:6px 0}
+  .row label{flex:0 0 74px;color:#93a2b2;font-size:11.5px}
+  input[type=range]{flex:1;accent-color:#4da3ff;height:16px}
+  .btn{background:#1d2530;border:1px solid #2f3945;color:#dfe6ee;border-radius:7px;
+       padding:5px 9px;cursor:pointer;font-size:12px}
+  .btn:hover{background:#26313e}
+  .btn.on{background:#2b6cb0;border-color:#3d8bd8}
+  #stats{top:12px;right:12px;text-align:right;font-variant-numeric:tabular-nums;color:#93a2b2}
+  #stats b{color:#dfe6ee;font-weight:600}
+  #help{bottom:14px;left:12px;color:#7d8b9a;font-size:11.5px;line-height:1.7}
+  kbd{background:#1d2530;border:1px solid #333d49;border-bottom-width:2px;border-radius:4px;
+      padding:0 4px;font:11px ui-monospace,monospace;color:#c8d4e0}
+  #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+        flex-direction:column;gap:14px;background:#0b0d10;z-index:9}
+  .tag{display:inline-block;padding:1px 6px;border-radius:5px;background:#1d2530;color:#93a2b2;font-size:11px}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="load"><div style="font-size:15px">loading gaussians…</div><div id="loadtxt" class="tag">…</div></div>
+
+<div id="hud" class="panel">
+  <h1>Object · gaussians</h1>
+  <div class="row"><label>color</label>
+    <select id="cset" class="btn" style="flex:1"></select>
+  </div>
+  <div class="row"><label>exposure</label><input type="range" id="exposure" min="0.4" max="3" step="0.05" value="1.2"></div>
+  <div class="row"><label>splat size</label><input type="range" id="ssize" min="0.5" max="2.5" step="0.05" value="1"></div>
+  <div class="row"><label>backdrop</label>
+    <button class="btn on" id="bgDark">Dark</button>
+    <button class="btn" id="bgGrey">Grey</button>
+    <button class="btn" id="bgLight">Light</button>
+  </div>
+  <div class="row">
+    <button class="btn" id="reset">Reset view</button>
+    <button class="btn" id="spin">Turntable</button>
+    <button class="btn" id="mesh" title="mesh close-up with the layers painted per vertex">Mesh</button>
+    <button class="btn" id="points" title="switch to the point rendering of this object">Points</button>
+  </div>
+</div>
+
+
+<div id="rv" class="panel" style="top:0;right:0;bottom:0;width:50vw;max-width:none;display:none;border-radius:0;overflow:auto">
+  <div class="row" style="margin:0 0 6px"><label style="flex:0 0 auto">real view</label>
+    <select id="rvLayer" class="btn" style="flex:1"></select>
+    <label class="btn" style="flex:0 0 auto;display:flex;align-items:center;gap:5px"><input type="checkbox" id="rvFollow" checked> follow 3D</label></div>
+  <div id="rvWrap" style="width:100%;aspect-ratio:1.195;overflow:hidden;border-radius:6px;background:#000;cursor:grab;position:relative">
+    <img id="rvImg" draggable="false" style="width:100%;display:block;transform-origin:0 0;user-select:none">
+    <div id="rvZoomTag" class="tag" style="position:absolute;right:6px;bottom:6px;display:none">1.0×</div>
+  </div>
+  <div id="rvInfo" class="tag" style="margin-top:6px;display:block"></div>
+  <div class="row" style="margin:6px 0 0"><button class="btn" id="rvPrev">‹ prev</button><button class="btn" id="rvNext">next ›</button>
+    <button class="btn" id="rvSnap">snap 3D to this view</button></div>
+</div>
+
+<div id="stats" class="panel">
+  <div><b id="fps">–</b> fps</div>
+  <div><span id="total">–</span> gaussians</div>
+</div>
+
+<div id="help" class="panel">
+  <kbd>LMB</kbd> rotate · <kbd>RMB</kbd> pan · <kbd>wheel</kbd> zoom · <kbd>1</kbd>…<kbd>9</kbd> colour set · <kbd>R</kbd> reset · <kbd>T</kbd> turntable
+</div>
+
+<script>
+// ---------------------------------------------------------------- state
+const V = { target:[0,0,0], dist:2.4, yaw:0.45, pitch:0.15, exposure:1.2, size:1.0,
+            colorSet:0, spin:false };
+const canvas = document.getElementById('gl');
+// alpha:true is essential: the under-operator blend reads DST_ALPHA, and the CSS backdrop shows through
+const gl = canvas.getContext('webgl2', {antialias:false});
+if (!gl) alert('WebGL2 is not available');
+
+// ---------------------------------------------------------------- shaders
+// The classic screen-space EWA splat: cov3d -> cov2d through the view Jacobian,
+// eigen axes give the quad, the fragment carries the gaussian falloff.
+const VS = `#version 300 es
+precision highp float; precision highp int;
+uniform highp usampler2D uTex;
+uniform mat4 uProj, uView;
+uniform vec2 uFocal, uViewport;
+uniform float uSize;
+in vec2 aPos; in int aIndex;
+out vec4 vColor; out vec2 vPos;
+void main(){
+  uvec4 cen = texelFetch(uTex, ivec2((uint(aIndex) & 0x3ffu) << 1, uint(aIndex) >> 10), 0);
+  vec4 cam = uView * vec4(uintBitsToFloat(cen.xyz), 1.0);
+  vec4 pos2d = uProj * cam;
+  float clip = 1.2 * pos2d.w;
+  if (pos2d.z < -clip || pos2d.x < -clip || pos2d.x > clip || pos2d.y < -clip || pos2d.y > clip){
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  uvec4 cov = texelFetch(uTex, ivec2(((uint(aIndex) & 0x3ffu) << 1) | 1u, uint(aIndex) >> 10), 0);
+  vec2 u1 = unpackHalf2x16(cov.x), u2 = unpackHalf2x16(cov.y), u3 = unpackHalf2x16(cov.z);
+  mat3 Vrk = mat3(u1.x, u1.y, u2.x,  u1.y, u2.y, u3.x,  u2.x, u3.x, u3.y) * (uSize*uSize);
+  mat3 J = mat3(uFocal.x / cam.z, 0.0, -(uFocal.x * cam.x) / (cam.z * cam.z),
+                0.0, -uFocal.y / cam.z, (uFocal.y * cam.y) / (cam.z * cam.z),
+                0.0, 0.0, 0.0);
+  mat3 T = transpose(mat3(uView)) * J;
+  mat3 cov2d = transpose(T) * Vrk * T;
+  cov2d[0][0] += 0.3; cov2d[1][1] += 0.3;            // low-pass: at least ~1px
+  float mid = (cov2d[0][0] + cov2d[1][1]) / 2.0;
+  float radius = length(vec2((cov2d[0][0] - cov2d[1][1]) / 2.0, cov2d[0][1]));
+  float l1 = mid + radius, l2 = mid - radius;
+  if (l2 < 0.0){ gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  vec2 dv = normalize(vec2(cov2d[0][1], l1 - cov2d[0][0]));
+  vec2 major = min(sqrt(2.0 * l1), 1024.0) * dv;
+  vec2 minor = min(sqrt(2.0 * l2), 1024.0) * vec2(dv.y, -dv.x);
+  vColor = vec4(float(cov.w & 0xffu), float((cov.w >> 8) & 0xffu), float((cov.w >> 16) & 0xffu),
+                float((cov.w >> 24) & 0xffu)) / 255.0;
+  vPos = aPos;
+  vec2 c = pos2d.xy / pos2d.w;
+  gl_Position = vec4(vec2(-1.0, 1.0) * (c + aPos.x * major / uViewport + aPos.y * minor / uViewport), 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec4 vColor; in vec2 vPos; out vec4 o;
+uniform float uExposure;
+void main(){
+  float A = -dot(vPos, vPos);
+  if (A < -4.0) discard;
+  float B = exp(A) * vColor.a;
+  o = vec4(B * min(vColor.rgb * uExposure, vec3(1.0)), B);
+}`;
+function sh(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const U = n => gl.getUniformLocation(prog, n);
+gl.disable(gl.DEPTH_TEST);
+gl.enable(gl.BLEND);
+gl.blendFuncSeparate(gl.ONE_MINUS_DST_ALPHA, gl.ONE, gl.ONE_MINUS_DST_ALPHA, gl.ONE);
+gl.blendEquationSeparate(gl.FUNC_ADD, gl.FUNC_ADD);
+
+// quad
+const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-2,-2, 2,-2, 2,2, -2,2]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'aPos');
+gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+const idxBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, idxBuf);
+const aIndex = gl.getAttribLocation(prog, 'aIndex');
+gl.enableVertexAttribArray(aIndex); gl.vertexAttribIPointer(aIndex, 1, gl.INT, 0, 0);
+gl.vertexAttribDivisor(aIndex, 1);
+const tex = [];
+function texFor(i){
+  while (tex.length <= i){
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    tex.push(t);
+  }
+  return tex[i];
+}
+gl.uniform1i(U('uTex'), 0);
+
+// ---------------------------------------------------------------- worker: texture packing + depth sort
+const workerSrc = `
+let buffers = [], vertexCount = 0, lastProj = [], depthIndex, lastCount = 0;
+function packHalf2x16(x, y){ return (floatToHalf(x) | (floatToHalf(y) << 16)) >>> 0; }
+function floatToHalf(f){
+  const fb = new Float32Array(1), ib = new Uint32Array(fb.buffer); fb[0] = f;
+  const b = ib[0], sign = (b >> 16) & 0x8000; let exp = ((b >> 23) & 0xff) - 127 + 15; let mant = b & 0x7fffff;
+  if (exp <= 0){ if (exp < -10) return sign; mant = (mant | 0x800000) >> (1 - exp); return sign | (mant >> 13); }
+  if (exp >= 31) return sign | 0x7c00;
+  return sign | (exp << 10) | (mant >> 13);
+}
+function generateTexture(set){
+  const buffer = buffers[set]; if (!buffer) return;
+  const f = new Float32Array(buffer), u = new Uint8Array(buffer);
+  const texwidth = 1024 * 2, texheight = Math.ceil((2 * vertexCount) / texwidth);
+  const texdata = new Uint32Array(texwidth * texheight * 4);
+  const tc = new Uint8Array(texdata.buffer), tf = new Float32Array(texdata.buffer);
+  for (let i = 0; i < vertexCount; i++){
+    tf[8*i+0] = f[8*i+0]; tf[8*i+1] = f[8*i+1]; tf[8*i+2] = f[8*i+2];
+    tc[4*(8*i+7)+0] = u[32*i+24+0]; tc[4*(8*i+7)+1] = u[32*i+24+1]; tc[4*(8*i+7)+2] = u[32*i+24+2]; tc[4*(8*i+7)+3] = u[32*i+24+3];
+    const scale = [f[8*i+3], f[8*i+4], f[8*i+5]];
+    const rot = [(u[32*i+28]-128)/128, (u[32*i+29]-128)/128, (u[32*i+30]-128)/128, (u[32*i+31]-128)/128];
+    const M = [
+      1.0 - 2.0*(rot[2]*rot[2] + rot[3]*rot[3]), 2.0*(rot[1]*rot[2] + rot[0]*rot[3]), 2.0*(rot[1]*rot[3] - rot[0]*rot[2]),
+      2.0*(rot[1]*rot[2] - rot[0]*rot[3]), 1.0 - 2.0*(rot[1]*rot[1] + rot[3]*rot[3]), 2.0*(rot[2]*rot[3] + rot[0]*rot[1]),
+      2.0*(rot[1]*rot[3] + rot[0]*rot[2]), 2.0*(rot[2]*rot[3] - rot[0]*rot[1]), 1.0 - 2.0*(rot[1]*rot[1] + rot[2]*rot[2]),
+    ].map((k, j) => k * scale[Math.floor(j / 3)]);
+    const sigma = [
+      M[0]*M[0] + M[3]*M[3] + M[6]*M[6], M[0]*M[1] + M[3]*M[4] + M[6]*M[7], M[0]*M[2] + M[3]*M[5] + M[6]*M[8],
+      M[1]*M[1] + M[4]*M[4] + M[7]*M[7], M[1]*M[2] + M[4]*M[5] + M[7]*M[8], M[2]*M[2] + M[5]*M[5] + M[8]*M[8]];
+    texdata[8*i+4] = packHalf2x16(4*sigma[0], 4*sigma[1]);
+    texdata[8*i+5] = packHalf2x16(4*sigma[2], 4*sigma[3]);
+    texdata[8*i+6] = packHalf2x16(4*sigma[4], 4*sigma[5]);
+  }
+  self.postMessage({texdata, texwidth, texheight, set}, [texdata.buffer]);
+}
+function runSort(viewProj){
+  const buffer = buffers[0]; if (!buffer) return;
+  const f = new Float32Array(buffer);
+  if (lastCount === vertexCount){
+    const dot = lastProj[2]*viewProj[2] + lastProj[6]*viewProj[6] + lastProj[10]*viewProj[10];
+    if (Math.abs(dot - 1) < 0.01) return;
+  } else { lastCount = vertexCount; }
+  let maxDepth = -Infinity, minDepth = Infinity;
+  const sizeList = new Int32Array(vertexCount);
+  for (let i = 0; i < vertexCount; i++){
+    const depth = ((viewProj[2]*f[8*i+0] + viewProj[6]*f[8*i+1] + viewProj[10]*f[8*i+2]) * 4096) | 0;
+    sizeList[i] = depth; if (depth > maxDepth) maxDepth = depth; if (depth < minDepth) minDepth = depth;
+  }
+  const depthInv = (256*256 - 1) / (maxDepth - minDepth || 1);
+  const counts0 = new Uint32Array(256*256);
+  for (let i = 0; i < vertexCount; i++){ sizeList[i] = ((sizeList[i] - minDepth) * depthInv) | 0; counts0[sizeList[i]]++; }
+  const starts0 = new Uint32Array(256*256);
+  for (let i = 1; i < 256*256; i++) starts0[i] = starts0[i-1] + counts0[i-1];
+  depthIndex = new Uint32Array(vertexCount);
+  for (let i = 0; i < vertexCount; i++) depthIndex[starts0[sizeList[i]]++] = i;
+  lastProj = viewProj;
+  self.postMessage({depthIndex, viewProj, vertexCount}, [depthIndex.buffer]);
+}
+let sortRunning = false, pendingProj = null;
+self.onmessage = e => {
+  if (e.data.buffer !== undefined){
+    buffers[e.data.set] = e.data.buffer; vertexCount = Math.floor(e.data.buffer.byteLength / 32);
+    generateTexture(e.data.set);
+  } else if (e.data.view){
+    pendingProj = e.data.view;
+    if (!sortRunning){ sortRunning = true; setTimeout(() => { runSort(pendingProj); sortRunning = false; }, 0); }
+  }
+};`;
+const worker = new Worker(URL.createObjectURL(new Blob([workerSrc], {type:'application/javascript'})));
+let N = 0, indexCount = 0, texReady = [], SETS = [];
+worker.onmessage = e => {
+  if (e.data.texdata){
+    const {texdata, texwidth, texheight, set} = e.data;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texFor(set));
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32UI, texwidth, texheight, 0, gl.RGBA_INTEGER, gl.UNSIGNED_INT, texdata);
+    texReady[set] = true;
+    const opt = document.querySelector('#cset option[value="'+set+'"]'); if (opt) opt.disabled = false;
+  } else if (e.data.depthIndex){
+    gl.bindBuffer(gl.ARRAY_BUFFER, idxBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, e.data.depthIndex, gl.DYNAMIC_DRAW);
+    indexCount = e.data.vertexCount;
+  }
+};
+
+// ---------------------------------------------------------------- math
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const scale=(a,s)=>[a[0]*s,a[1]*s,a[2]*s], dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const norm=a=>{const l=Math.hypot(a[0],a[1],a[2])||1; return [a[0]/l,a[1]/l,a[2]/l];};
+function lookAt(eye, target, up){
+  // OpenCV camera: x right, y down, z forward (matches the projection's -y and the shader Jacobian)
+  const f = norm(sub(target, eye)), r = norm(cross(f, up)), d = cross(f, r);
+  return new Float32Array([r[0],d[0],f[0],0, r[1],d[1],f[1],0, r[2],d[2],f[2],0,
+                           -dot(r,eye), -dot(d,eye), -dot(f,eye), 1]);
+}
+function perspective(fy, w, h, near, far){
+  const fx = fy;                                                   // square pixels
+  return new Float32Array([2*fx/w,0,0,0, 0,-2*fy/h,0,0, 0,0,far/(far-near),1, 0,0,-(far*near)/(far-near),0]);
+}
+function mul4(a, b){ const o = new Float32Array(16);
+  for (let c=0;c<4;c++) for (let r=0;r<4;r++){ let s=0; for (let k=0;k<4;k++) s += a[k*4+r]*b[c*4+k]; o[c*4+r]=s; }
+  return o; }
+const UPV = [0,1,0];
+function orbitDir(){ const cp=Math.cos(V.pitch), sp=Math.sin(V.pitch);
+  return norm([cp*Math.sin(V.yaw), sp, cp*Math.cos(V.yaw)]); }   // yaw 0 = +z = the crop's front
+
+// ---------------------------------------------------------------- input
+let drag = null;
+canvas.addEventListener('mousedown', e => { drag = {x:e.clientX, y:e.clientY, btn:e.button}; if (e.button===2) e.preventDefault(); });
+window.addEventListener('mouseup', () => drag = null);
+window.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const dx = e.clientX-drag.x, dy = e.clientY-drag.y; drag.x=e.clientX; drag.y=e.clientY;
+  if (drag.btn===0){ V.yaw -= dx*0.005; V.pitch = Math.max(-1.45, Math.min(1.45, V.pitch + dy*0.005)); V.spin=false; spinBtn.classList.remove('on'); }
+  else { const f = V.dist*0.0016, fwd = orbitDir(), right = norm(cross(UPV, fwd)), up2 = norm(cross(fwd, right));
+    V.target = add(V.target, add(scale(right, -dx*f), scale(up2, dy*f))); }
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('wheel', e => { e.preventDefault(); V.dist *= Math.exp(e.deltaY*0.0012); V.dist = Math.max(0.15, Math.min(12, V.dist)); }, {passive:false});
+function resetView(){ V.target=[0,0,0]; V.dist=2.4; V.yaw=0.45; V.pitch=0.15; }
+document.getElementById('reset').onclick = resetView;
+const spinBtn = document.getElementById('spin');
+spinBtn.onclick = () => { V.spin = !V.spin; spinBtn.classList.toggle('on', V.spin); };
+document.getElementById('points').onclick = () => { location.href = 'index.html?obj=1'; };
+document.getElementById('mesh').onclick = () => { location.href = 'mesh.html'; };
+const csel = document.getElementById('cset');
+csel.onchange = () => setColor(+csel.value);
+function setColor(i){ if (!texReady[i]) return; V.colorSet = i; csel.value = String(i); }
+document.getElementById('exposure').oninput = e => V.exposure = +e.target.value;
+document.getElementById('ssize').oninput = e => V.size = +e.target.value;
+for (const [id, col] of [['bgDark','#0b0d10'],['bgGrey','#4c4f54'],['bgLight','#e6e6e3']])
+  document.getElementById(id).onclick = e => { canvas.style.background = col; for (const k of ['bgDark','bgGrey','bgLight']) document.getElementById(k).classList.toggle('on', k===id); };
+window.addEventListener('keydown', e => {
+  if (e.key>='1' && e.key<='9') setColor(+e.key-1);
+  if (e.key==='r' || e.key==='R') resetView();
+  if (e.key==='t' || e.key==='T') spinBtn.click();
+});
+function resize(){ const dpr = Math.min(window.devicePixelRatio||1, 2);
+  const half = (document.getElementById('rv') || {style:{display:'none'}}).style.display !== 'none';
+  canvas.width = Math.floor(innerWidth*(half?0.5:1)*dpr); canvas.height = Math.floor(innerHeight*dpr);
+  canvas.style.width = half ? '50vw' : '100vw'; canvas.style.height = '100vh'; }
+window.addEventListener('resize', resize); resize();
+
+// ---------------------------------------------------------------- loop
+let frames = 0, lastFps = performance.now(), lastT = performance.now();
+function frame(now){
+  const dt = (now - lastT)/1000; lastT = now;
+  if (V.spin) V.yaw += dt*0.6;
+  const w = canvas.width, h = canvas.height;
+  const fy = 0.5*h / Math.tan(0.5*0.7);                          // ~40 deg vertical fov
+  const proj = perspective(fy, w, h, 0.05, 50);
+  const eye = add(V.target, scale(orbitDir(), V.dist));
+  const view = lookAt(eye, V.target, UPV);
+  const viewProj = mul4(proj, view);
+  worker.postMessage({view: Array.from(viewProj)});
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (indexCount && texReady[V.colorSet]){
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texFor(V.colorSet));
+    gl.uniformMatrix4fv(U('uProj'), false, proj); gl.uniformMatrix4fv(U('uView'), false, view);
+    gl.uniform2f(U('uFocal'), fy, fy); gl.uniform2f(U('uViewport'), w, h);
+    gl.uniform1f(U('uSize'), V.size); gl.uniform1f(U('uExposure'), V.exposure);
+    gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, indexCount);
+  }
+  rvTick();
+  frames++; if (now - lastFps > 500){ document.getElementById('fps').textContent = Math.round(frames*1000/(now-lastFps)); frames=0; lastFps=now; }
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------- load
+async function boot(){
+  const meta = await (await fetch('splat.json')).json().catch(() => null);
+  SETS = (meta && meta.sets && meta.sets.length) ? meta.sets
+       : [{name:'RGB', file:'splat.splat'}, {name:'nxyz (kNN)', file:'splat_n.splat'}];
+  csel.innerHTML = SETS.map((s, i) => `<option value="${i}" disabled>${i+1}. ${s.name}</option>`).join('');
+  csel.value = '0';
+  const r = await fetch(SETS[0].file);
+  if (!r.ok) throw new Error(SETS[0].file + ' missing');
+  const buf = await r.arrayBuffer();
+  N = Math.floor(buf.byteLength / 32);
+  document.getElementById('total').textContent = N.toLocaleString();
+  worker.postMessage({buffer: buf, set: 0}, [buf]);
+  // the other colour sets stream in behind the first one
+  (async () => { for (let i = 1; i < SETS.length; i++){
+      try { const rn = await fetch(SETS[i].file); if (rn.ok){ const b = await rn.arrayBuffer(); worker.postMessage({buffer: b, set: i}, [b]); } } catch(e){}
+  } })();
+  document.getElementById('load').style.display = 'none';
+  requestAnimationFrame(frame);
+}
+boot().catch(e => {
+  // no gaussian pack for this object: fall back to the point close-up
+  document.getElementById('loadtxt').textContent = e.message + ' — opening points';
+  setTimeout(() => location.replace('index.html?obj=1'), 600);
+});
+
+// ---------------------------------------------------------------- real views (split view)
+// views.json: every frame the object was seen in, with the camera direction in
+// THIS viewer's frame -> while you orbit the model, the photo from the nearest
+// real viewpoint shows beside it, in the layer of your choice
+let RV = null, rvCur = -1, rvLock = false;
+const SET2LAYER = {'RGB':'rgb','RGB (baked)':'rgb','RGB deglare':'rgb_deglare','nxyz (kNN)':'nxyz','nxyz (mesh)':'nxyz',
+  'Nxyz':'nxyz','N xy':'n_xy','N xz':'n_xz',
+  'phys':'nxyz_phys','diffuse':'nxyz_diffuse','specv2':'nxyz_specv2','Edge':'edge'};
+const RVNAMES = {rgb:'RGB', rgb_orig:'RGB · original', rgb_deglare:'RGB deglare', nxyz:'Nxyz', n_xy:'N xy', n_xz:'N xz',
+  nxyz_phys:'phys', nxyz_diffuse:'diffuse', nxyz_specv2:'specv2', edge:'Edge'};
+async function rvInit(){
+  try { RV = await (await fetch('views.json')).json(); } catch(e){ RV = null; }
+  if (!RV || !RV.views || !RV.views.length) return;
+  const sel = document.getElementById('rvLayer');
+  sel.innerHTML = RV.layers.map(l => `<option value="${l}">${RVNAMES[l] || l}</option>`).join('');
+  sel.onchange = () => rvShow(rvCur, true);          // layer independent: view-sync stays
+  document.getElementById('rvFollow').onchange = e => { if (e.target.checked) rvLock = false; };
+  const wrap = document.getElementById('rvWrap'), im = document.getElementById('rvImg'), zt = document.getElementById('rvZoomTag');
+  let Z = {s: 1, tx: 0, ty: 0};
+  function rvApply(){
+    const mw = wrap.clientWidth, mh = wrap.clientHeight;
+    const iw = mw * Z.s, ih = im.naturalHeight ? mw * Z.s * im.naturalHeight / im.naturalWidth : mh * Z.s;
+    Z.tx = Math.min(0, Math.max(mw - iw, Z.tx)); Z.ty = Math.min(0, Math.max(mh - ih, Z.ty));
+    im.style.transform = `translate(${Z.tx}px,${Z.ty}px) scale(${Z.s})`;
+    zt.style.display = Z.s > 1.01 ? 'block' : 'none'; zt.textContent = Z.s.toFixed(1) + '×';
+  }
+  wrap.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = wrap.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+    const s0 = Z.s; Z.s = Math.min(12, Math.max(1, Z.s * Math.exp(-e.deltaY * 0.0016)));
+    Z.tx = mx - (mx - Z.tx) * Z.s / s0; Z.ty = my - (my - Z.ty) * Z.s / s0;
+    rvApply();
+  }, {passive: false});
+  let rvDrag = null;
+  wrap.addEventListener('mousedown', e => { rvDrag = {x: e.clientX, y: e.clientY}; wrap.style.cursor = 'grabbing'; e.preventDefault(); e.stopPropagation(); });
+  window.addEventListener('mousemove', e => { if (!rvDrag) return; Z.tx += e.clientX - rvDrag.x; Z.ty += e.clientY - rvDrag.y; rvDrag = {x: e.clientX, y: e.clientY}; rvApply(); });
+  window.addEventListener('mouseup', () => { rvDrag = null; wrap.style.cursor = 'grab'; });
+  wrap.addEventListener('dblclick', () => { Z = {s: 1, tx: 0, ty: 0}; rvApply(); });
+  im.addEventListener('load', rvApply);
+  document.getElementById('rvPrev').onclick = () => { document.getElementById('rvFollow').checked = false; rvShow((rvCur - 1 + RV.views.length) % RV.views.length, true); };
+  document.getElementById('rvNext').onclick = () => { document.getElementById('rvFollow').checked = false; rvShow((rvCur + 1) % RV.views.length, true); };
+  document.getElementById('rvSnap').onclick = () => { const v = RV.views[rvCur]; if (!v) return; V.yaw = v.yaw; V.pitch = v.pitch; document.getElementById('rvFollow').checked = true; };
+  document.getElementById('rv').style.display = 'block';
+  resize();
+  const st = document.getElementById('stats'); if (st){ st.style.top = 'auto'; st.style.bottom = '14px'; }
+}
+function rvLayerForSet(){
+  const s = (typeof SETS !== 'undefined' && SETS[V.colorSet !== undefined ? V.colorSet : V.set]) || null;
+  const name = s ? s.name : 'RGB';
+  const l = SET2LAYER[name] || 'rgb';
+  return (RV && RV.layers.includes(l)) ? l : 'rgb';
+}
+function rvShow(i, force){
+  if (!RV || i < 0) return;
+  const sel = document.getElementById('rvLayer');
+  const v = RV.views[i];
+  if (i !== rvCur || force){
+    rvCur = i;
+    document.getElementById('rvImg').src = `views/v${v.i}_${sel.value}.jpg`;
+  }
+  const d = orbitDir();
+  const ang = Math.acos(Math.max(-1, Math.min(1, d[0]*v.dir[0] + d[1]*v.dir[1] + d[2]*v.dir[2]))) * 180/Math.PI;
+  document.getElementById('rvInfo').textContent =
+    `${v.name.slice(0, 26)} · cam ${v.cam} · ${v.auto ? 'auto view' : 'operator ROI'} · ${ang.toFixed(0)}° from the current orbit · ${i+1}/${RV.views.length}`;
+}
+let rvLastLayer = null;
+function rvTick(){
+  if (!RV) return;
+  const follow = document.getElementById('rvFollow').checked;
+  if (follow){
+    const d = orbitDir(); let best = -1, bd = -2;
+    RV.views.forEach((v, i) => { const s = d[0]*v.dir[0] + d[1]*v.dir[1] + d[2]*v.dir[2]; if (s > bd){ bd = s; best = i; } });
+    rvShow(best, best !== rvCur);
+  } else if (rvCur >= 0) rvShow(rvCur, false);
+}
+rvInit();
+
+</script>
+</body>
+</html>

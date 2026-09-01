@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>NAST Inspector</title>
+<style>
+  :root{--bg:#0b0d10;--pane:#12161b;--line:#232b33;--ink:#dfe6ee;--dim:#8b98a7;
+        --accent:#4da3ff;--go:#54dc78;--warn:#ffb454;--bad:#ff7b7b}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+            font:13px/1.45 system-ui,Segoe UI,sans-serif;overflow:hidden}
+  #top{position:fixed;top:0;left:0;right:0;height:44px;display:flex;align-items:center;
+       gap:4px;padding:0 12px;background:#0d1116;border-bottom:1px solid var(--line);z-index:20}
+  #top b{font-size:14px;margin-right:16px;letter-spacing:.02em}
+  .tab{background:none;border:0;color:var(--dim);padding:8px 14px;cursor:pointer;
+       font-size:13px;border-radius:7px}
+  .tab:hover{color:var(--ink)}
+  .tab.on{color:var(--ink);background:#1b2530}
+  #top .sp{flex:1}
+  .pill{font-size:11px;padding:2px 8px;border-radius:20px;background:#1b2530;color:var(--dim)}
+  main{position:fixed;top:44px;left:0;right:0;bottom:0}
+  .pane{position:absolute;inset:0;display:none}
+  .pane.on{display:block}
+  .panel{position:absolute;background:rgba(18,22,27,.9);border:1px solid var(--line);
+          border-radius:10px;padding:10px 12px;backdrop-filter:blur(6px)}
+  .btn{background:#1b2530;border:1px solid #2f3945;color:var(--ink);border-radius:7px;
+       padding:5px 9px;cursor:pointer;font-size:12px}
+  .btn:hover{background:#26313e}.btn.on{background:#2b6cb0;border-color:#3d8bd8}
+  .row{display:flex;align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap}
+  .row label{flex:0 0 58px;color:var(--dim);font-size:11.5px}
+  input[type=range]{accent-color:var(--accent)}
+  input[type=text]{background:#0e1318;border:1px solid #2a333d;color:var(--ink);
+                   border-radius:6px;padding:4px 7px;font-size:12px;width:90px}
+  canvas{display:block}
+  /* recorder */
+  #recStage{position:absolute;inset:0 0 76px 0;display:flex;align-items:center;justify-content:center}
+  #recCv{max-width:100%;max-height:100%;cursor:crosshair;background:#000}
+  #recBar{position:absolute;left:0;right:0;bottom:0;height:76px;background:rgba(13,16,20,.96);
+          border-top:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:0 14px}
+  #recHud{top:12px;left:12px;width:236px}
+  #objBox{top:12px;right:12px;width:266px;max-height:78vh;overflow:auto}
+  .obj{display:flex;align-items:center;gap:6px;padding:6px;border-radius:7px;margin:4px 0;background:#161c22}
+  .obj b{flex:1;font-weight:500}.obj .m{color:var(--dim);font-size:11px}
+  .dotx{color:var(--bad);cursor:pointer;padding:0 4px}
+  #mapCv,#glCv{width:100%;height:100%}
+  #mapLegend{bottom:14px;left:14px;color:var(--dim);font-size:12px;line-height:1.9}
+  #glHud{top:12px;left:12px;width:210px}
+  .tag{display:inline-block;padding:1px 6px;border-radius:5px;background:#1b2530;color:var(--dim);font-size:11px}
+  #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1b2530;
+         border:1px solid var(--line);padding:8px 14px;border-radius:8px;opacity:0;transition:.2s;z-index:30}
+  kbd{background:#1b2530;border:1px solid #333d49;border-bottom-width:2px;border-radius:4px;
+      padding:0 4px;font:11px ui-monospace,monospace}
+  h4{margin:2px 0 8px;font-size:13px}
+</style>
+</head>
+<body>
+<div id="top">
+  <b>NAST Inspector</b>
+  <button class="tab on" data-p="rec">1 · Рекордер + ROI</button>
+  <button class="tab" data-p="map">2 · Карта</button>
+  <button class="tab" data-p="gl">3 · 3D сцена</button>
+  <span class="sp"></span>
+  <span class="pill" id="sceneInfo">…</span>
+</div>
+
+<main>
+  <!-- ============================================ RECORDER -->
+  <section class="pane on" id="pane-rec">
+    <div id="recStage"><canvas id="recCv"></canvas></div>
+    <div id="recHud" class="panel">
+      <h4>Рекордер</h4>
+      <div class="row"><label>камера</label>
+        <button class="btn on" id="camA">A</button><button class="btn" id="camB">B</button></div>
+      <div class="row"><label>шар</label>
+        <button class="btn on" id="lRgb">RGB</button><button class="btn" id="lNx">nxyz</button></div>
+      <div class="row"><label>ROI</label>
+        <button class="btn" id="tRect">▭</button><button class="btn" id="tCirc">◯</button>
+        <button class="btn" id="tPoly">✎</button></div>
+      <div class="row"><label>назва</label><input type="text" id="lab" placeholder="напр. камера"></div>
+      <div class="row"><span class="tag" id="recStat">…</span></div>
+    </div>
+    <div id="objBox" class="panel">
+      <h4>Об'єкти <span class="tag" id="objN">0</span></h4>
+      <div id="objList"></div>
+      <div id="posePanel" style="display:none;border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+        <h4>3D bbox <span class="tag" id="poseLab"></span></h4>
+        <div class="row"><label>yaw</label>
+          <button class="btn" data-pe="yaw:-5">−5°</button><button class="btn" data-pe="yaw:-1">−1°</button>
+          <button class="btn" data-pe="yaw:1">+1°</button><button class="btn" data-pe="yaw:5">+5°</button></div>
+        <div class="row"><label>довжина</label>
+          <button class="btn" data-pe="L:0.95">−</button><button class="btn" data-pe="L:1.05">+</button>
+          <label>ширина</label>
+          <button class="btn" data-pe="W:0.95">−</button><button class="btn" data-pe="W:1.05">+</button></div>
+        <div class="row"><label>висота</label>
+          <button class="btn" data-pe="H:0.95">−</button><button class="btn" data-pe="H:1.05">+</button>
+          <label>вздовж</label>
+          <button class="btn" data-pe="mf:-0.05">−</button><button class="btn" data-pe="mf:0.05">+</button></div>
+        <div class="row"><label>вбік</label>
+          <button class="btn" data-pe="ml:-0.05">−</button><button class="btn" data-pe="ml:0.05">+</button>
+          <label>вгору</label>
+          <button class="btn" data-pe="mu:-0.03">−</button><button class="btn" data-pe="mu:0.03">+</button></div>
+        <div class="row"><button class="btn" id="addObs">+ ракурс з іншого кадру</button></div>
+      </div>
+    </div>
+    <div id="recBar">
+      <button class="btn" id="play">▶</button>
+      <button class="btn" id="stepB">⏮</button><button class="btn" id="stepF">⏭</button>
+      <input type="range" id="tl" min="0" max="100" step="1" value="0" style="flex:1">
+      <span class="tag" id="tlab" style="min-width:96px;text-align:center">0 / 0</span>
+      <select id="speed" class="btn"><option>0.5</option><option selected>1</option>
+        <option>2</option><option>4</option><option>8</option></select>
+    </div>
+  </section>
+
+  <!-- ============================================ MAP -->
+  <section class="pane" id="pane-map">
+    <canvas id="mapCv"></canvas>
+    <div id="mapLegend" class="panel">
+      <div><span style="color:var(--accent)">●</span> траєкторія руху</div>
+      <div><span style="color:var(--go)">◉</span> позначений об'єкт (мигає)</div>
+      <div class="tag" id="mapStat" style="margin-top:6px">…</div>
+    </div>
+  </section>
+
+  <!-- ============================================ 3D -->
+  <section class="pane" id="pane-gl">
+    <canvas id="glCv"></canvas>
+    <div id="glHud" class="panel">
+      <h4>3D сцена</h4>
+      <div class="row"><label>точок</label><input type="range" id="glBudget" min="10" max="100" value="70" style="flex:1"></div>
+      <div class="row"><label>розмір</label><input type="range" id="glSize" min="0.4" max="3" step="0.1" value="1" style="flex:1"></div>
+      <div class="row"><span class="tag" id="glStat">…</span></div>
+      <div class="row" style="color:var(--dim);font-size:11px">ЛКМ обертати · колесо зум · клік по боксу — фокус</div>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const API = '';
+let META=null, FRAMES={A:[],B:[]}, OBJECTS=[], POSES=null;
+const S = { cam:'A', layer:'rgb', pos:0, playing:false, speed:1, tool:null, drawing:null, sel:null };
+
+// ---- 3D bbox helpers (pose = {t,q(wxyz),size:[L,H,W]}) ----
+function q2R(q){const[w,x,y,z]=q;return[
+  [1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w)],
+  [2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w)],
+  [2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)]];}
+function R2q(R){const t=R[0][0]+R[1][1]+R[2][2];let w,x,y,z;
+  if(t>0){const s=0.5/Math.sqrt(t+1);w=0.25/s;x=(R[2][1]-R[1][2])*s;y=(R[0][2]-R[2][0])*s;z=(R[1][0]-R[0][1])*s;}
+  else{const d=[R[0][0],R[1][1],R[2][2]];const i=d.indexOf(Math.max(...d));const j=(i+1)%3,k=(i+2)%3;
+    const s=2*Math.sqrt(Math.max(1e-12,1+R[i][i]-R[j][j]-R[k][k]));const q=[0,0,0,0];
+    q[0]=(R[k][j]-R[j][k])/s;q[1+i]=0.25*s;q[1+j]=(R[j][i]+R[i][j])/s;q[1+k]=(R[k][i]+R[i][k])/s;
+    [w,x,y,z]=q;}
+  return[w,x,y,z];}
+function mv(R,v){return[R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2],
+  R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2],R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]];}
+function poseCorners(ps){const R=q2R(ps.q),[L,H,W]=ps.size,c=ps.t,out=[];
+  for(const a of[-1,1])for(const b of[-1,1])for(const d of[-1,1])
+    out.push([c[0]+R[0][0]*a*L/2+R[0][1]*b*H/2+R[0][2]*d*W/2,
+              c[1]+R[1][0]*a*L/2+R[1][1]*b*H/2+R[1][2]*d*W/2,
+              c[2]+R[2][0]*a*L/2+R[2][1]*b*H/2+R[2][2]*d*W/2]);
+  return out;}
+const BOX_EDGES=[[0,1],[0,2],[1,3],[2,3],[4,5],[4,6],[5,7],[6,7],[0,4],[1,5],[2,6],[3,7]];
+function projPt(fr,X){const R=q2R(fr.q),C=fr.p,I=META.intrinsics;
+  const d=[X[0]-C[0],X[1]-C[1],X[2]-C[2]];
+  const xc=R[0][0]*d[0]+R[0][1]*d[1]+R[0][2]*d[2],
+        yc=R[1][0]*d[0]+R[1][1]*d[1]+R[1][2]*d[2],
+        zc=R[2][0]*d[0]+R[2][1]*d[1]+R[2][2]*d[2];
+  if(zc<=0.05)return null;
+  const u=I.fx*xc/zc+I.cx, v=I.fy*yc/zc+I.cy;
+  return[(I.h-1)-v,u];}   // upright canvas coords
+function drawPoseBox(ctx,ps,name,hot){const fr=POSES&&POSES[name];if(!fr)return;
+  const pts=poseCorners(ps).map(X=>projPt(fr,X));if(pts.some(p=>!p))return;
+  const t=performance.now()/1000,pulse=0.55+0.45*Math.sin(t*4);
+  ctx.lineWidth=hot?3:2;
+  ctx.strokeStyle=hot?`rgba(255,180,60,${pulse})`:`rgba(90,200,255,${0.35+0.3*pulse})`;
+  ctx.beginPath();
+  for(const[a,b]of BOX_EDGES){ctx.moveTo(pts[a][0],pts[a][1]);ctx.lineTo(pts[b][0],pts[b][1]);}
+  ctx.stroke();
+  const R=q2R(ps.q),c=ps.t,L=ps.size[0];       // heading tick
+  const tip=projPt(fr,[c[0]+R[0][0]*L*0.65,c[1]+R[1][0]*L*0.65,c[2]+R[2][0]*L*0.65]);
+  const cc=projPt(fr,c);
+  if(tip&&cc){ctx.beginPath();ctx.moveTo(cc[0],cc[1]);ctx.lineTo(tip[0],tip[1]);ctx.stroke();}}
+
+function toast(msg, ms=1800){ const t=document.getElementById('toast');
+  t.textContent=msg; t.style.opacity=1; clearTimeout(t._h);
+  t._h=setTimeout(()=>t.style.opacity=0, ms); }
+async function jget(u){ return (await fetch(API+u)).json(); }
+async function jpost(u,b){ const r=await fetch(API+u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+  return {ok:r.ok, data:await r.json()}; }
+
+// -------------------------------------------------------- tabs
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+  document.querySelectorAll('.pane').forEach(x=>x.classList.remove('on'));
+  t.classList.add('on');
+  document.getElementById('pane-'+t.dataset.p).classList.add('on');
+  if(t.dataset.p==='map') Map.activate();
+  if(t.dataset.p==='gl') GL.activate();
+});
+
+// ======================================================== RECORDER
+const recCv=document.getElementById('recCv'), rctx=recCv.getContext('2d');
+const cache=new Map(); const CMAX=200;
+function img(name,layer){ const k=layer+'/'+name;
+  if(cache.has(k)){const v=cache.get(k);cache.delete(k);cache.set(k,v);return v;}
+  const im=new Image(); im.src='/frames/'+layer+'/'+name; cache.set(k,im);
+  if(cache.size>CMAX) cache.delete(cache.keys().next().value); return im; }
+function curName(){ const L=S.cam==='A'?FRAMES.A:FRAMES.B; return L[Math.min(S.pos,L.length-1)]; }
+function prefetch(){ const L=S.cam==='A'?FRAMES.A:FRAMES.B;
+  for(let d=1;d<=20;d++){ if(S.pos+d<L.length) img(L[S.pos+d],S.layer); } }
+function evImg(e){ const r=recCv.getBoundingClientRect();
+  return [(e.clientX-r.left)*(recCv.width/r.width),(e.clientY-r.top)*(recCv.height/r.height)]; }
+function shape(ctx,kind,pts){ ctx.beginPath();
+  if(kind==='rect'){const[a,b]=pts;ctx.rect(Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.abs(b[0]-a[0]),Math.abs(b[1]-a[1]));}
+  else if(kind==='circle'){const[c,e]=pts;ctx.arc(c[0],c[1],Math.hypot(e[0]-c[0],e[1]-c[1]),0,7);}
+  else{pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();} }
+function recDraw(){
+  const name=curName(); if(!name) return;
+  const im=img(name,S.layer);
+  if(!im.complete||!im.naturalWidth){ im.onload=recDraw; return; }
+  const W=im.naturalHeight,H=im.naturalWidth;
+  if(recCv.width!==W||recCv.height!==H){recCv.width=W;recCv.height=H;}
+  rctx.save(); rctx.translate(W,0); rctx.rotate(Math.PI/2); rctx.drawImage(im,0,0); rctx.restore();
+  const t=performance.now()/1000, pulse=0.55+0.45*Math.sin(t*4);
+  for(const o of OBJECTS){ if(o.frame!==name) continue;
+    rctx.lineWidth=3; rctx.strokeStyle=`rgba(84,220,120,${pulse})`; rctx.fillStyle='rgba(84,220,120,.10)';
+    shape(rctx,o.kind,JSON.parse(o.pts)); rctx.fill(); rctx.stroke();
+    const p0=JSON.parse(o.pts)[0]; rctx.font='bold 20px system-ui';
+    rctx.fillStyle=`rgba(120,255,160,${pulse})`; rctx.fillText(o.label,p0[0]+6,p0[1]-8); }
+  for(const o of OBJECTS){ const ps=o.pose&&(typeof o.pose==='string'?JSON.parse(o.pose):o.pose);
+    if(ps&&ps.t) drawPoseBox(rctx,ps,name,o.id===S.sel); }
+  if(S.drawing){ rctx.lineWidth=2.5; rctx.setLineDash([8,6]); rctx.strokeStyle='rgba(255,200,80,.95)';
+    shape(rctx,S.drawing.kind,S.drawing.kind==='poly'?S.drawing.pts:S.drawing.pts.slice(0,2)); rctx.stroke(); rctx.setLineDash([]); }
+  const L=S.cam==='A'?FRAMES.A:FRAMES.B;
+  document.getElementById('tlab').textContent=`${S.pos} / ${L.length-1}`;
+  document.getElementById('tl').value=S.pos; document.getElementById('tl').max=L.length-1;
+  document.getElementById('recStat').textContent=`${S.cam} · ${S.layer} · к.${name.slice(14,22)}`;
+}
+recCv.addEventListener('mousedown',e=>{ if(!S.tool) return; const p=evImg(e);
+  if(S.tool==='poly'){ if(!S.drawing)S.drawing={kind:'poly',pts:[]}; S.drawing.pts.push(p); }
+  else{ S.drawing={kind:S.tool,pts:[p,p]};
+    const mv=ev=>S.drawing.pts[1]=evImg(ev);
+    const up=ev=>{window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);
+      S.drawing.pts[1]=evImg(ev); commit();};
+    window.addEventListener('mousemove',mv); window.addEventListener('mouseup',up); } });
+async function commit(){ const d=S.drawing; S.drawing=null; if(!d) return;
+  if(d.kind!=='poly' && Math.hypot(d.pts[1][0]-d.pts[0][0],d.pts[1][1]-d.pts[0][1])<6) return;
+  if(d.kind==='poly'&&d.pts.length<3) return;
+  const rp=d.pts.map(p=>[Math.round(p[0]),Math.round(p[1])]);
+  if(S.addTo){ const id=S.addTo; S.addTo=null; document.getElementById('addObs').classList.remove('on');
+    toast('дозбираю ракурс…');
+    const {ok,data}=await jpost('/api/objects/'+id+'/roi',{frame:curName(),kind:d.kind,pts:rp});
+    if(!ok){ toast('ракурс: '+(data.error||'помилка')); return; }
+    toast(`бокс оновлено: ${data.npts} точок з ${JSON.parse(data.obs).length} ракурсів`);
+    await refreshObjects(); return; }
+  const lab=document.getElementById('lab').value.trim()||('R'+(OBJECTS.length+1));
+  toast('рахую 3D-позицію…');
+  const {ok,data}=await jpost('/api/roi',{frame:curName(),cam:S.cam,kind:d.kind,
+    pts:rp,label:lab});
+  if(!ok){ toast('ROI: '+(data.error||'помилка')); return; }
+  toast(`об'єкт «${lab}»: ${data.npts} точок → 3D bbox`);
+  await refreshObjects();
+}
+document.getElementById('addObs').onclick=()=>{
+  if(!S.sel) return;
+  S.addTo=S.addTo?null:S.sel;
+  document.getElementById('addObs').classList.toggle('on',!!S.addTo);
+  if(S.addTo) toast('перейди на інший кадр і обведи той самий обʼєкт'); };
+function tool(t,btn){ S.tool=S.tool===t?null:t;
+  ['tRect','tCirc','tPoly'].forEach(i=>document.getElementById(i).classList.remove('on'));
+  if(S.tool) btn.classList.add('on'); S.drawing=null; }
+document.getElementById('tRect').onclick=e=>tool('rect',e.target);
+document.getElementById('tCirc').onclick=e=>tool('circle',e.target);
+document.getElementById('tPoly').onclick=e=>tool('poly',e.target);
+function setCam(c){ S.cam=c; document.getElementById('camA').classList.toggle('on',c==='A');
+  document.getElementById('camB').classList.toggle('on',c==='B');
+  const L=c==='A'?FRAMES.A:FRAMES.B; S.pos=Math.min(S.pos,L.length-1); prefetch(); }
+document.getElementById('camA').onclick=()=>setCam('A');
+document.getElementById('camB').onclick=()=>setCam('B');
+function setLayer(l){ S.layer=l; document.getElementById('lRgb').classList.toggle('on',l==='rgb');
+  document.getElementById('lNx').classList.toggle('on',l==='nxyz'); prefetch(); }
+document.getElementById('lRgb').onclick=()=>setLayer('rgb');
+document.getElementById('lNx').onclick=()=>setLayer('nxyz');
+document.getElementById('play').onclick=()=>{ S.playing=!S.playing;
+  document.getElementById('play').textContent=S.playing?'❚❚':'▶'; };
+function clampPos(){ const L=S.cam==='A'?FRAMES.A:FRAMES.B; S.pos=Math.max(0,Math.min(S.pos,L.length-1)); prefetch(); }
+document.getElementById('stepF').onclick=()=>{S.pos++;clampPos();};
+document.getElementById('stepB').onclick=()=>{S.pos--;clampPos();};
+document.getElementById('tl').oninput=e=>{S.pos=+e.target.value;clampPos();};
+document.getElementById('speed').onchange=e=>S.speed=+e.target.value;
+window.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT') return;
+  if(e.code==='Space'){e.preventDefault();document.getElementById('play').onclick();}
+  else if(e.key==='ArrowRight'){S.pos+=e.shiftKey?20:1;clampPos();}
+  else if(e.key==='ArrowLeft'){S.pos-=e.shiftKey?20:1;clampPos();}
+  else if(e.key==='1')setLayer('rgb'); else if(e.key==='2')setLayer('nxyz');
+  else if(e.key==='Enter'&&S.drawing&&S.drawing.kind==='poly')commit();
+  else if(e.key==='Escape')S.drawing=null; });
+
+async function refreshObjects(){
+  OBJECTS = await jget('/api/objects');
+  document.getElementById('objN').textContent=OBJECTS.length;
+  const el=document.getElementById('objList'); el.innerHTML='';
+  for(const o of OBJECTS){
+    const d=document.createElement('div'); d.className='obj';
+    if(o.id===S.sel) d.style.outline='1px solid var(--accent)';
+    d.innerHTML=`<b>${o.label}</b><span class="m">${o.kind}·${o.cam}·${o.npts}т</span>`;
+    d.onclick=()=>selectObj(o.id);
+    const go=document.createElement('button'); go.className='btn'; go.textContent='→к';
+    go.title='до кадру'; go.onclick=ev=>{ev.stopPropagation();jumpToObj(o);};
+    const rc=document.createElement('button'); rc.className='btn'; rc.textContent='рек.';
+    rc.title='детальна реконструкція'; rc.onclick=ev=>{ev.stopPropagation();reconstruct(o);};
+    const x=document.createElement('span'); x.className='dotx'; x.textContent='✕';
+    x.onclick=async ev=>{ ev.stopPropagation(); await fetch('/api/objects/'+o.id,{method:'DELETE'});
+      if(S.sel===o.id) selectObj(null); refreshObjects(); };
+    d.append(go,rc,x); el.appendChild(d);
+  }
+  if(Map._on) Map.load();
+  GL.objectsDirty=true;
+}
+function selectObj(id){ S.sel=(S.sel===id)?null:id;
+  const o=OBJECTS.find(x=>x.id===S.sel);
+  const ps=o&&o.pose&&(typeof o.pose==='string'?JSON.parse(o.pose):o.pose);
+  document.getElementById('posePanel').style.display=(ps&&ps.t)?'block':'none';
+  document.getElementById('poseLab').textContent=o?o.label:'';
+  refreshObjects(); }
+async function editPose(op,val){
+  const o=OBJECTS.find(x=>x.id===S.sel); if(!o) return;
+  const ps=typeof o.pose==='string'?JSON.parse(o.pose):o.pose; if(!ps) return;
+  const R=q2R(ps.q); const fw=[R[0][0],R[1][0],R[2][0]],
+    up=[R[0][1],R[1][1],R[2][1]], lat=[R[0][2],R[1][2],R[2][2]];
+  if(op==='yaw'){ const a=val*Math.PI/180, ca=Math.cos(a), sa=Math.sin(a);
+    const f2=fw.map((v,i)=>ca*v+sa*lat[i]);       // rotate fw toward lat around up
+    const n=Math.hypot(...f2); const fn=f2.map(v=>v/n);
+    const l2=[fn[1]*up[2]-fn[2]*up[1],fn[2]*up[0]-fn[0]*up[2],fn[0]*up[1]-fn[1]*up[0]];
+    ps.q=R2q([[fn[0],up[0],l2[0]],[fn[1],up[1],l2[1]],[fn[2],up[2],l2[2]]]); }
+  else if(op==='L') ps.size[0]*=val;
+  else if(op==='H'){ const dH=ps.size[1]*(val-1); ps.size[1]*=val;
+    ps.t=ps.t.map((v,i)=>v+up[i]*dH/2); }         // grow up, keep the base
+  else if(op==='W') ps.size[2]*=val;
+  else if(op==='mf') ps.t=ps.t.map((v,i)=>v+fw[i]*val);
+  else if(op==='ml') ps.t=ps.t.map((v,i)=>v+lat[i]*val);
+  else if(op==='mu') ps.t=ps.t.map((v,i)=>v+up[i]*val);
+  o.pose=JSON.stringify(ps);
+  await jpost('/api/objects/'+o.id+'/pose', ps);
+}
+document.querySelectorAll('#posePanel [data-pe]').forEach(b=>{
+  const[op,v]=b.dataset.pe.split(':'); b.onclick=()=>editPose(op,parseFloat(v)); });
+function jumpToObj(o){ setCam(o.cam);
+  const L=o.cam==='A'?FRAMES.A:FRAMES.B; const p=L.indexOf(o.frame);
+  if(p>=0){S.pos=p;clampPos();}
+  document.querySelector('.tab[data-p=rec]').click(); }
+async function reconstruct(o){ const {data}=await jpost('/api/reconstruct',{object_id:o.id});
+  toast(`реконструкція об'єкта «${o.label}» — робота #${data.job_id} у черзі`); }
+
+// ======================================================== MAP (2D top-down)
+const Map = {
+  _on:false, data:null, cv:document.getElementById('mapCv'),
+  activate(){ this._on=true; this.resize(); this.load(); if(!this._raf) this.loop(); },
+  async load(){ this.data=await jget('/api/map');
+    document.getElementById('mapStat').textContent=`${this.data.traj.length} поз · ${this.data.objects.length} об.`; },
+  resize(){ const dpr=Math.min(devicePixelRatio||1,2);
+    this.cv.width=this.cv.clientWidth*dpr; this.cv.height=this.cv.clientHeight*dpr; },
+  loop(){ this._raf=requestAnimationFrame(()=>this.loop()); if(this._on) this.draw(); },
+  draw(){ const d=this.data; if(!d) return; const g=this.cv.getContext('2d');
+    const W=this.cv.width,H=this.cv.height; g.clearRect(0,0,W,H);
+    const[minx,miny,maxx,maxy]=d.bounds; const span=Math.max(maxx-minx,maxy-miny)||1;
+    const pad=60; const sc=(Math.min(W,H)-2*pad)/span;
+    const ox=(W-(maxx-minx)*sc)/2, oy=(H-(maxy-miny)*sc)/2;
+    const X=x=>ox+(x-minx)*sc, Y=y=>oy+(y-miny)*sc;
+    g.fillStyle='#4da3ff';
+    for(const[x,y]of d.traj){ g.beginPath(); g.arc(X(x),Y(y),2.2,0,7); g.fill(); }
+    const t=performance.now()/1000, pulse=0.5+0.5*Math.sin(t*4.5);
+    for(const o of d.objects){ const r=Math.max(10,o.r*sc);
+      g.beginPath(); g.arc(X(o.x),Y(o.y),r*(1+.25*pulse),0,7);
+      g.strokeStyle=`rgba(84,220,120,${0.4+0.6*pulse})`; g.lineWidth=3; g.stroke();
+      g.fillStyle=`rgba(84,220,120,${0.15+0.2*pulse})`; g.fill();
+      g.fillStyle='#bfffd0'; g.font='bold 15px system-ui'; g.fillText(o.label,X(o.x)+r+6,Y(o.y)+5); }
+  }
+};
+addEventListener('resize',()=>{ if(Map._on)Map.resize(); GL.resize&&GL.resize(); });
+
+// ======================================================== 3D (WebGL cloud + bbox)
+const GL = {
+  _init:false, objectsDirty:true,
+  async activate(){ if(!this._init){ await this.boot(); this._init=true; }
+    this._on=true; if(!this._raf) this.loop(); },
+  resize(){ if(!this.gl) return; const dpr=Math.min(devicePixelRatio||1,2);
+    const c=document.getElementById('glCv'); c.width=c.clientWidth*dpr; c.height=c.clientHeight*dpr; },
+  async boot(){
+    const c=document.getElementById('glCv'); this.resize();
+    const gl=c.getContext('webgl2',{antialias:false}); this.gl=gl;
+    const meta=await jget('/cloud/meta.json'); this.meta=meta;
+    const poses=await jget('/cloud/poses.json'); this.poses=poses;
+    const pos=new Float32Array(await (await fetch('/cloud/pos.f32')).arrayBuffer());
+    const rgb=new Uint8Array(await (await fetch('/cloud/rgb.u8')).arrayBuffer());
+    this.N=meta.count;
+    const vs=`#version 300 es
+      layout(location=0)in vec3 p;layout(location=1)in vec3 c;
+      uniform mat4 uV,uP;uniform float uS;out vec3 vc;
+      void main(){vec4 v=uV*vec4(p,1.);gl_Position=uP*v;
+        gl_PointSize=clamp(uS/max(-v.z,.001),1.,12.);vc=c;}`;
+    const fs=`#version 300 es
+      precision highp float;in vec3 vc;out vec4 o;
+      void main(){vec2 d=gl_PointCoord*2.-1.;if(dot(d,d)>1.)discard;o=vec4(vc,1.);}`;
+    const lvs=`#version 300 es
+      layout(location=0)in vec3 p;uniform mat4 uV,uP;
+      void main(){gl_Position=uP*uV*vec4(p,1.);}`;
+    const lfs=`#version 300 es
+      precision highp float;uniform vec4 uC;out vec4 o;void main(){o=uC;}`;
+    const mk=(t,s)=>{const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);return sh;};
+    const prog=(a,b)=>{const p=gl.createProgram();gl.attachShader(p,mk(gl.VERTEX_SHADER,a));
+      gl.attachShader(p,mk(gl.FRAGMENT_SHADER,b));gl.linkProgram(p);return p;};
+    this.P=prog(vs,fs); this.LP=prog(lvs,lfs);
+    this.vao=gl.createVertexArray(); gl.bindVertexArray(this.vao);
+    const bp=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,bp); gl.bufferData(gl.ARRAY_BUFFER,pos,gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+    const bc=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,bc); gl.bufferData(gl.ARRAY_BUFFER,rgb,gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,3,gl.UNSIGNED_BYTE,true,0,0);
+    this.lbuf=gl.createBuffer();
+    // camera around scene centre
+    const C=poses.frames.map(f=>f.p); const mid=[0,1,2].map(i=>C.reduce((s,p)=>s+p[i],0)/C.length);
+    this.up=poses.up||meta.up||[0,1,0]; this.target=mid; this.dist=meta.extent*1.4;
+    this.yaw=0; this.pitch=-.3;
+    const c2=document.getElementById('glCv');
+    let drag=0,lx,ly;
+    c2.addEventListener('mousedown',e=>{drag=1;lx=e.clientX;ly=e.clientY;});
+    addEventListener('mouseup',()=>drag=0);
+    addEventListener('mousemove',e=>{ if(!drag) return;
+      this.yaw-=(e.clientX-lx)*.006; this.pitch=Math.max(-1.4,Math.min(1.4,this.pitch+(e.clientY-ly)*.006));
+      lx=e.clientX;ly=e.clientY; });
+    c2.addEventListener('wheel',e=>{e.preventDefault();
+      this.dist=Math.max(meta.extent*.05,Math.min(meta.extent*4,this.dist*Math.pow(1.0012,e.deltaY)));},{passive:false});
+    document.getElementById('glBudget').oninput=e=>this.budget=+e.target.value/100;
+    document.getElementById('glSize').oninput=e=>this.psize=+e.target.value;
+    this.budget=.7; this.psize=1;
+    document.getElementById('glStat').textContent=`${(this.N/1e6).toFixed(1)}M точок`;
+  },
+  boxLines(o){ // 12 edges of an axis-aligned box
+    const cx=o.cx,cy=o.cy,cz=o.cz,hx=o.sx/2,hy=o.sy/2,hz=o.sz/2;
+    const v=[[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]
+      .map(s=>[cx+s[0]*hx,cy+s[1]*hy,cz+s[2]*hz]);
+    const e=[[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+    const a=[]; for(const[i,j]of e){a.push(...v[i],...v[j]);} return new Float32Array(a);
+  },
+  mats(){ const c=document.getElementById('glCv'),w=c.width,h=c.height;
+    const cp=Math.cos(this.pitch),sp=Math.sin(this.pitch);
+    const U=this.up,ref=Math.abs(U[1])<.9?[0,1,0]:[1,0,0];
+    const cr=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+    const nm=a=>{const l=Math.hypot(...a)||1;return a.map(x=>x/l);};
+    const AX=nm(cr(ref,U)),AZ=nm(cr(U,AX));
+    const dir=nm([AX[0]*cp*Math.sin(this.yaw)+AZ[0]*cp*Math.cos(this.yaw)+U[0]*sp,
+                  AX[1]*cp*Math.sin(this.yaw)+AZ[1]*cp*Math.cos(this.yaw)+U[1]*sp,
+                  AX[2]*cp*Math.sin(this.yaw)+AZ[2]*cp*Math.cos(this.yaw)+U[2]*sp]);
+    const eye=[this.target[0]+dir[0]*this.dist,this.target[1]+dir[1]*this.dist,this.target[2]+dir[2]*this.dist];
+    const z=nm([eye[0]-this.target[0],eye[1]-this.target[1],eye[2]-this.target[2]]);
+    const x=nm(cr(U,z)),y=cr(z,x);
+    const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+    const V=new Float32Array([x[0],y[0],z[0],0,x[1],y[1],z[1],0,x[2],y[2],z[2],0,-dot(x,eye),-dot(y,eye),-dot(z,eye),1]);
+    const f=1/Math.tan(.6), a=w/h;
+    const n=this.meta.extent*.01,fa=this.meta.extent*40;
+    const P=new Float32Array([f/a,0,0,0,0,f,0,0,0,0,-(fa+n)/(fa-n),-1,0,0,-2*fa*n/(fa-n),0]);
+    return {V,P};
+  },
+  loop(){ this._raf=requestAnimationFrame(()=>this.loop()); if(!this._on||!this.gl) return;
+    const gl=this.gl,c=document.getElementById('glCv');
+    gl.viewport(0,0,c.width,c.height); gl.clearColor(.043,.051,.063,1);
+    gl.enable(gl.DEPTH_TEST); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    const {V,P}=this.mats();
+    gl.useProgram(this.P); gl.bindVertexArray(this.vao);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.P,'uV'),false,V);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.P,'uP'),false,P);
+    gl.uniform1f(gl.getUniformLocation(this.P,'uS'),this.psize*this.meta.extent*(c.height/1024)*0.9);
+    gl.drawArrays(gl.POINTS,0,Math.floor(this.N*this.budget));
+    // pulsing object boxes
+    gl.useProgram(this.LP);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.LP,'uV'),false,V);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.LP,'uP'),false,P);
+    const pulse=.5+.5*Math.sin(performance.now()/1000*4.5);
+    gl.disable(gl.DEPTH_TEST);
+    for(const o of OBJECTS){ const L=this.boxLines(o);
+      gl.bindBuffer(gl.ARRAY_BUFFER,this.lbuf); gl.bufferData(gl.ARRAY_BUFFER,L,gl.DYNAMIC_DRAW);
+      const lv=gl.createVertexArray(); gl.bindVertexArray(lv);
+      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+      gl.uniform4f(gl.getUniformLocation(this.LP,'uC'),.33,.86,.47,.5+.5*pulse);
+      gl.lineWidth(2); gl.drawArrays(gl.LINES,0,24); gl.deleteVertexArray(lv); }
+    document.getElementById('glStat').textContent=`${(this.N/1e6).toFixed(1)}M точок · ${OBJECTS.length} bbox`;
+  }
+};
+
+// ======================================================== boot
+(async function(){
+  META = await jget('/api/meta');
+  FRAMES = await jget('/api/frames');
+  POSES = await jget('/api/poses');
+  document.getElementById('sceneInfo').textContent =
+    `${FRAMES.A.length}+${FRAMES.B.length} кадрів · ${(META.count/1e6).toFixed(1)}M точок`;
+  await refreshObjects();
+  prefetch(); recLoop();
+  setInterval(()=>{ if(Map._on) Map.load(); }, 2000);   // live map
+})();
+let lastT=performance.now(), acc=0;
+function recLoop(){ requestAnimationFrame(recLoop);
+  const now=performance.now(), dt=(now-lastT)/1000; lastT=now;
+  if(S.playing){ acc+=dt*8*S.speed; const st=Math.floor(acc);
+    if(st>0){ acc-=st; const L=S.cam==='A'?FRAMES.A:FRAMES.B;
+      S.pos=Math.min(S.pos+st,L.length-1);
+      if(S.pos>=L.length-1){S.playing=false;document.getElementById('play').textContent='▶';} prefetch(); } }
+  recDraw();
+}
+</script>
+</body>
+</html>

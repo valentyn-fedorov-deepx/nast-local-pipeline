@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Deskview point viewer</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d10;color:#dfe6ee;font:13px/1.45 system-ui,Segoe UI,sans-serif;overflow:hidden}
+  #gl{display:block;width:100vw;height:100vh;cursor:crosshair}
+  .panel{position:fixed;background:rgba(16,19,24,.86);border:1px solid #2a3138;border-radius:10px;
+         padding:10px 12px;backdrop-filter:blur(6px);user-select:none}
+  #hud{top:12px;left:12px;min-width:250px}
+  #hud h1{margin:0 0 8px;font-size:14px;font-weight:600;letter-spacing:.02em}
+  .row{display:flex;align-items:center;gap:8px;margin:6px 0}
+  .row label{flex:0 0 74px;color:#93a2b2;font-size:11.5px}
+  input[type=range]{flex:1;accent-color:#4da3ff;height:16px}
+  .btn{background:#1d2530;border:1px solid #2f3945;color:#dfe6ee;border-radius:7px;
+       padding:5px 9px;cursor:pointer;font-size:12px}
+  .btn:hover{background:#26313e}
+  .btn.on{background:#2b6cb0;border-color:#3d8bd8}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  #timeline{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;width:min(760px,92vw);
+            display:flex;align-items:center;gap:10px}
+  #tl{flex:1}
+  #stats{top:12px;right:12px;text-align:right;font-variant-numeric:tabular-nums;color:#93a2b2}
+  #stats b{color:#dfe6ee;font-weight:600}
+  #help{bottom:14px;left:12px;color:#7d8b9a;font-size:11.5px;line-height:1.7;max-width:230px}
+  kbd{background:#1d2530;border:1px solid #333d49;border-bottom-width:2px;border-radius:4px;
+      padding:0 4px;font:11px ui-monospace,monospace;color:#c8d4e0}
+  #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+        flex-direction:column;gap:14px;background:#0b0d10;z-index:9}
+  #bar{width:280px;height:4px;background:#1d2530;border-radius:2px;overflow:hidden}
+  #bar i{display:block;height:100%;width:0;background:#4da3ff;transition:width .15s}
+  .tag{display:inline-block;padding:1px 6px;border-radius:5px;background:#1d2530;color:#93a2b2;font-size:11px}
+  #focus{color:#4da3ff}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<canvas id="ov" style="position:fixed;inset:0;pointer-events:none;z-index:5"></canvas>
+
+<div id="trkPanel" class="panel" style="top:132px;right:12px;display:none">
+  <div class="row" style="margin:0"><label style="flex:0 0 auto">LAYERS</label>
+    <button class="btn on" id="trkA">Track A</button>
+    <button class="btn on" id="trkB">Track B</button>
+    <button class="btn on" id="trkObj">Objects</button></div>
+</div>
+
+<div id="load"><div style="font-size:15px">loading point cloud…</div><div id="bar"><i></i></div>
+  <div id="loadtxt" class="tag">…</div></div>
+
+<div id="hud" class="panel">
+  <h1>Point viewer</h1>
+  <div class="row">
+    <button class="btn on" id="mRec">Recorded camera</button>
+    <button class="btn" id="mFree">Free orbit</button>
+  </div>
+  <div class="row"><label>color</label>
+    <button class="btn on" id="cRgb">RGB</button>
+    <button class="btn" id="cNrm">nxyz</button>
+  </div>
+  <div class="row"><label>point size</label><input type="range" id="sz" min="0.3" max="4" step="0.1" value="1"></div>
+  <div class="row"><label>max px</label><input type="range" id="mx" min="3" max="40" step="1" value="10"></div>
+  <div class="row"><label>budget</label><input type="range" id="budget" min="5" max="100" step="1" value="100"></div>
+  <div class="row"><label>exposure</label><input type="range" id="exposure" min="0.4" max="2.5" step="0.05" value="1"></div>
+  <div class="row">
+    <button class="btn on" id="round">Round points</button>
+    <button class="btn" id="roll">Roll 90°</button>
+    <button class="btn" id="reset">Reset view</button>
+  </div>
+</div>
+
+<div id="stats" class="panel">
+  <div><b id="fps">–</b> fps</div>
+  <div><span id="drawn">–</span> / <span id="total">–</span> points</div>
+  <div id="mode" class="tag">recorded camera</div>
+  <div id="focus"></div>
+</div>
+
+<div id="help" class="panel">
+  <kbd>LMB</kbd> orbit · <kbd>RMB</kbd> pan · <kbd>wheel</kbd> zoom<br>
+  <kbd>click a point</kbd> — focus and orbit around it<br>
+  <kbd>Space</kbd> play/pause · <kbd>C</kbd> back to camera<br>
+  <kbd>1</kbd>/<kbd>2</kbd> RGB/nxyz · <kbd>F</kbd> focus · <kbd>R</kbd> reset
+</div>
+
+<div id="timeline" class="panel">
+  <button class="btn" id="play">▶</button>
+  <input type="range" id="tl" min="0" max="100" step="0.01" value="0">
+  <span class="tag" id="tlab">0 / 0</span>
+  <select id="speed" class="btn"><option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select>
+</div>
+
+<script>
+const QS = new URLSearchParams(location.search);
+const IS_OBJ = QS.get('obj') === '1', IS_TOP = QS.get('top') === '1';   // close-up / map modes
+const V = {                                   // ---- state
+  mode: 'rec',            // 'rec' (camera path) | 'free'
+  playing: false, t: 0, speed: 1,
+  colorSet: 0, pointScale: 1.0, maxSize: 10, budget: 1, exposure: 1, round: true,
+  target: [0,0,0], dist: 5, yaw: 0, pitch: -0.2,   // free-orbit camera
+  blend: 0,               // 0 = recorded pose, 1 = free camera (smooth switch)
+  focusName: '',
+};
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', {antialias:false, depth:true, powerPreference:'high-performance'});
+if (!gl) alert('WebGL2 is not available');
+
+// ---------------------------------------------------------------- shaders
+const VS = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aCol;
+uniform mat4 uView, uProj;
+uniform float uScale, uMaxSize;
+out vec3 vCol;
+void main(){
+  vec4 vp = uView * vec4(aPos,1.0);
+  gl_Position = uProj * vp;
+  float d = max(-vp.z, 0.001);
+  gl_PointSize = clamp(uScale / d, 1.0, uMaxSize);   // perspective-correct: points grow when you close in
+  vCol = aCol;
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec3 vCol; out vec4 o;
+uniform float uExposure; uniform bool uRound;
+void main(){
+  if (uRound){ vec2 c = gl_PointCoord*2.0-1.0; if (dot(c,c) > 1.0) discard; }
+  o = vec4(pow(vCol*uExposure, vec3(1.0)), 1.0);
+}`;
+// picking: encode gl_VertexID into RGB so a single readPixels gives the point index
+const FS_PICK = `#version 300 es
+precision highp float;
+flat in highp int vId; out vec4 o;
+void main(){
+  if (true){ vec2 c = gl_PointCoord*2.0-1.0; if (dot(c,c) > 1.0) discard; }
+  int id = vId + 1;
+  o = vec4(float(id & 255)/255.0, float((id>>8) & 255)/255.0, float((id>>16) & 255)/255.0, 1.0);
+}`;
+const VS_PICK = `#version 300 es
+layout(location=0) in vec3 aPos;
+uniform mat4 uView, uProj; uniform float uScale, uMaxSize;
+flat out highp int vId;
+void main(){
+  vec4 vp = uView * vec4(aPos,1.0);
+  gl_Position = uProj * vp;
+  float d = max(-vp.z, 0.001);
+  gl_PointSize = clamp(uScale / d, 2.0, uMaxSize);
+  vId = gl_VertexID;
+}`;
+
+function sh(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+function prog(vs, fs){ const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p; }
+
+// fullscreen blit of the accumulation target (the default framebuffer is wiped
+// after every composite, so multi-frame accumulation has to live in an FBO)
+const VS_QUAD = `#version 300 es
+out vec2 vUV;
+void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  vUV = p; gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+const FS_QUAD = `#version 300 es
+precision highp float; in vec2 vUV; out vec4 o; uniform sampler2D uTex;
+void main(){ o = texture(uTex, vUV); }`;
+
+const P = prog(VS, FS), PP = prog(VS_PICK, FS_PICK), PQ = prog(VS_QUAD, FS_QUAD);
+const U = n => gl.getUniformLocation(P, n), UP = n => gl.getUniformLocation(PP, n);
+
+let sceneFB = null, sceneTex = null, sceneRB = null, sceneW = 0, sceneH = 0, quadVAO = null;
+function ensureSceneFB(w, h){
+  if (sceneFB && sceneW === w && sceneH === h) return;
+  sceneW = w; sceneH = h;
+  if (!sceneFB){ sceneFB = gl.createFramebuffer(); sceneTex = gl.createTexture(); sceneRB = gl.createRenderbuffer(); }
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindRenderbuffer(gl.RENDERBUFFER, sceneRB);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFB);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTex, 0);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, sceneRB);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (!quadVAO) quadVAO = gl.createVertexArray();
+  acc = 0;
+}
+function blitScene(){
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(PQ); gl.bindVertexArray(quadVAO);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.uniform1i(gl.getUniformLocation(PQ, 'uTex'), 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.enable(gl.DEPTH_TEST);
+}
+
+// ---------------------------------------------------------------- math
+const M4 = {
+  ident: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+  mul(a,b){ const o = new Float32Array(16);
+    for(let i=0;i<4;i++) for(let j=0;j<4;j++){ let s=0; for(let k=0;k<4;k++) s += a[k*4+j]*b[i*4+k]; o[i*4+j]=s; }
+    return o; },
+  lookAt(eye, ctr, up){
+    const z = norm(sub(eye, ctr)), x = norm(cross(up, z)), y = cross(z, x);
+    return new Float32Array([x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0,
+      -dot(x,eye), -dot(y,eye), -dot(z,eye), 1]); },
+  persp(fx, fy, cx, cy, w, h, n, f){        // pinhole -> GL projection
+    return new Float32Array([
+      2*fx/w, 0, 0, 0,
+      0, 2*fy/h, 0, 0,
+      (w-2*cx)/w, (2*cy-h)/h, -(f+n)/(f-n), -1,
+      0, 0, -2*f*n/(f-n), 0]); },
+};
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const scale=(a,s)=>[a[0]*s,a[1]*s,a[2]*s], dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const len=a=>Math.hypot(a[0],a[1],a[2]), norm=a=>{const l=len(a)||1; return [a[0]/l,a[1]/l,a[2]/l];};
+const lerp=(a,b,t)=>a+(b-a)*t, lerp3=(a,b,t)=>[lerp(a[0],b[0],t),lerp(a[1],b[1],t),lerp(a[2],b[2],t)];
+function quatToR(q){                          // colmap quat (w,x,y,z) -> world->cam R
+  const [w,x,y,z]=q;
+  return [[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+          [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+          [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]]; }
+function slerp(qa, qb, t){
+  let [aw,ax,ay,az]=qa, [bw,bx,by,bz]=qb;
+  let d = aw*bw+ax*bx+ay*by+az*bz;
+  if (d<0){ bw=-bw;bx=-bx;by=-by;bz=-bz; d=-d; }
+  if (d>0.9995) return normq([aw+(bw-aw)*t, ax+(bx-ax)*t, ay+(by-ay)*t, az+(bz-az)*t]);
+  const th0=Math.acos(d), th=th0*t, s0=Math.sin(th0), s1=Math.sin(th0-th)/s0, s2=Math.sin(th)/s0;
+  return [aw*s1+bw*s2, ax*s1+bx*s2, ay*s1+by*s2, az*s1+bz*s2]; }
+const normq=q=>{const l=Math.hypot(...q)||1; return q.map(v=>v/l);};
+
+// ---------------------------------------------------------------- data load
+let META=null, POSES=null, N=0, POS=null, VAO=null, bufPos=null, bufCol=[null,null], pickFB=null, pickTex=null, pickRB=null;
+
+async function fetchProgress(url, onp){
+  const r = await fetch(url);
+  const total = +r.headers.get('content-length') || 0;
+  const reader = r.body.getReader(); const chunks=[]; let got=0;
+  for(;;){ const {done, value} = await reader.read(); if(done) break;
+    chunks.push(value); got += value.length; if(total) onp(got/total); }
+  const buf = new Uint8Array(got); let off=0;
+  for(const c of chunks){ buf.set(c, off); off += c.length; }
+  return buf.buffer;
+}
+
+async function boot(){
+  const bar = document.querySelector('#bar i'), txt = document.getElementById('loadtxt');
+  META = await (await fetch('meta.json')).json();
+  POSES = await (await fetch('poses.json')).json();
+  txt.textContent = `${(META.count/1e6).toFixed(1)} M points`;
+  const posBuf = await fetchProgress('pos.f32', p => bar.style.width = (p*60)+'%');
+  POS = new Float32Array(posBuf); N = META.count;
+  const rgbBuf = await fetchProgress('rgb.u8', p => bar.style.width = (60+p*25)+'%');
+  let nrmBuf = null;
+  if (META.has_nrm) nrmBuf = await fetchProgress('nrm.u8', p => bar.style.width = (85+p*15)+'%');
+  bar.style.width = '100%';
+
+  VAO = gl.createVertexArray(); gl.bindVertexArray(VAO);
+  bufPos = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufPos);
+  gl.bufferData(gl.ARRAY_BUFFER, POS, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  bufCol[0] = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufCol[0]);
+  gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(rgbBuf), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+  if (nrmBuf){ bufCol[1] = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufCol[1]);
+    gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(nrmBuf), gl.STATIC_DRAW); }
+  else { document.getElementById('cNrm').disabled = true; }
+
+  try { CELLS = await (await fetch('cells.json')).json(); } catch(e){ CELLS = []; }
+  if (!CELLS.length) CELLS = [[0,0,0, META.extent*10, 0, N]];   // fallback: one big cell
+  buildUpCandidates();
+  setUpAxis(POSES.up || META.up || UP_CANDS[0] || [0,1,0]);
+  document.getElementById('total').textContent = (N/1e6).toFixed(1)+'M';
+  document.getElementById('tl').max = Math.max(POSES.frames.length-1, 0);
+  document.getElementById('load').style.display='none';
+  loadOverlay();
+  if (IS_OBJ) objMode();
+  resetView(); requestAnimationFrame(frame);
+}
+
+// ---- object close-up: only what a turntable needs ----------------------
+function objMode(){
+  for (const id of ['timeline','trkPanel','help','mRec','mFree','roll']){
+    const el = document.getElementById(id); if (el) el.style.display = 'none';
+  }
+  const h1 = document.querySelector('#hud h1'); if (h1) h1.textContent = 'Object · points';
+  const gsb = document.createElement('button'); gsb.className = 'btn'; gsb.textContent = 'Gaussians';
+  gsb.title = 'switch to the gaussian-splat rendering'; gsb.onclick = () => { location.href = 'splat.html'; };
+  const rr = document.getElementById('reset'); if (rr && rr.parentNode) rr.parentNode.appendChild(gsb);
+  const md = document.getElementById('mode'); if (md) md.style.display = 'none';
+  const hp = document.getElementById('help');
+  const help = document.createElement('div'); help.className = 'panel'; help.id = 'help';
+  help.innerHTML = '<kbd>LMB</kbd> rotate · <kbd>RMB</kbd> pan · <kbd>wheel</kbd> zoom · <kbd>1</kbd>/<kbd>2</kbd> RGB/nxyz · <kbd>R</kbd> reset';
+  document.body.appendChild(help);
+  // free orbit around the object centre, no recorded-camera blend
+  V.mode = 'free'; V.blend = 1;
+  // TRELLIS colours come out dark (SH DC only): lift the exposure a notch
+  V.exposure = 1.5; const ex = document.getElementById('exposure'); if (ex) ex.value = 1.5;
+  // a few 10k points only: fatter splats close the surface instead of a starfield
+  V.pointScale = 2.2; const sz = document.getElementById('sz'); if (sz) sz.value = 2.2;
+  V.maxSize = 14; const mx = document.getElementById('mx'); if (mx) mx.value = 14;
+}
+
+// ---- overlay: pulsing object labels + camera tracks (no 3D boxes) --------
+let OBJ3D = [], TRACKS = null, showTrk = {A:true, B:true, obj:true};
+async function loadOverlay(){
+  if (IS_OBJ) return;   // close-up: no map layers
+  try { OBJ3D = await (await fetch('/api/objects3d')).json(); } catch(e){ OBJ3D = []; }
+  try { TRACKS = await (await fetch('/api/tracks')).json(); } catch(e){ TRACKS = null; }
+  if (OBJ3D.length || TRACKS) document.getElementById('trkPanel').style.display='block';
+  for (const [id, key] of [['trkA','A'],['trkB','B'],['trkObj','obj']])
+    document.getElementById(id).onclick = e => {
+      showTrk[key] = !showTrk[key];
+      e.target.classList.toggle('on', showTrk[key]);
+    };
+}
+const ov = document.getElementById('ov'), octx = ov.getContext('2d');
+function ovProject(m, X){
+  const w = m[3]*X[0] + m[7]*X[1] + m[11]*X[2] + m[15];
+  if (w <= 0.001) return null;
+  const x = (m[0]*X[0] + m[4]*X[1] + m[8]*X[2] + m[12]) / w;
+  const y = (m[1]*X[0] + m[5]*X[1] + m[9]*X[2] + m[13]) / w;
+  if (x < -1.3 || x > 1.3 || y < -1.3 || y > 1.3) return null;
+  return [(x*0.5+0.5)*ov.width/(window.devicePixelRatio||1),
+          (1-(y*0.5+0.5))*ov.height/(window.devicePixelRatio||1)];
+}
+function mulMat(a, b){                          // column-major a*b
+  const o = new Float32Array(16);
+  for (let c=0;c<4;c++) for (let r=0;r<4;r++){
+    let s=0; for (let k=0;k<4;k++) s += a[k*4+r]*b[c*4+k];
+    o[c*4+r]=s; }
+  return o;
+}
+function ovDraw(view, proj, now){
+  const dpr = window.devicePixelRatio||1;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  if (ov.width !== W*dpr || ov.height !== H*dpr){ ov.width=W*dpr; ov.height=H*dpr; }
+  octx.setTransform(dpr,0,0,dpr,0,0);
+  octx.clearRect(0,0,W,H);
+  if (!TRACKS && !OBJ3D.length) return;
+  const m = mulMat(proj, view);
+  if (TRACKS){
+    for (const [cam, col] of [['A','#4da3ff'],['B','#ff6a5a']]){
+      if (!showTrk[cam] || !TRACKS[cam]) continue;
+      octx.strokeStyle = col; octx.lineWidth = 2; octx.globalAlpha = 0.85;
+      octx.beginPath();
+      let pen = false, prev = null;
+      const jump = META.extent*0.08;              // pose outliers: lift the pen instead of a spike across the map
+      for (let i=0;i<TRACKS[cam].length;i+=2){
+        const X = TRACKS[cam][i];
+        if (prev && len(sub(X, prev)) > jump){ pen=false; prev=X; continue; }
+        prev = X;
+        const p = ovProject(m, X);
+        if (!p){ pen=false; continue; }
+        if (pen) octx.lineTo(p[0],p[1]); else { octx.moveTo(p[0],p[1]); pen=true; }
+      }
+      octx.stroke(); octx.globalAlpha = 1;
+    }
+  }
+  if (showTrk.obj){
+    const pulse = 0.55 + 0.45*Math.sin(now/1000*4.2);
+    for (const o of OBJ3D){
+      const p = ovProject(m, o.c);
+      if (!p) continue;
+      // marker radius follows the object's real size on screen
+      const edge = ovProject(m, [o.c[0]+o.r*AX[0], o.c[1]+o.r*AX[1], o.c[2]+o.r*AX[2]]);
+      const r = Math.max(10, Math.min(90, edge ? Math.hypot(edge[0]-p[0], edge[1]-p[1]) : 14));
+      octx.beginPath();
+      octx.arc(p[0], p[1], r, 0, 7);
+      octx.strokeStyle = `rgba(84,220,120,${pulse})`;
+      octx.lineWidth = 3;
+      octx.stroke();
+      octx.beginPath();
+      octx.arc(p[0], p[1], r*0.25, 0, 7);
+      octx.fillStyle = `rgba(120,255,160,${0.35*pulse})`;
+      octx.fill();
+      octx.font = 'bold 14px system-ui';
+      octx.fillStyle = `rgba(140,255,170,${0.6+0.4*pulse})`;
+      octx.fillText(o.label || ('#'+o.id), p[0]+r+6, p[1]-4);
+    }
+  }
+}
+
+function resetView(){
+  if (IS_TOP){
+    // map mode: bird's eye over the whole cloud
+    const F = POSES.frames;
+    let c = [0,0,0];
+    if (META.bbox) c = [ (META.bbox.min[0]+META.bbox.max[0])/2,
+                         (META.bbox.min[1]+META.bbox.max[1])/2,
+                         (META.bbox.min[2]+META.bbox.max[2])/2 ];
+    else if (F.length){ for (const f of F) for (let i=0;i<3;i++) c[i]+=f.p[i]/F.length; }
+    V.target = c; V.dist = META.extent*1.05; V.yaw = 0; V.pitch = 1.35;
+    V.t=0; V.playing=false;
+    setMode('free'); V.blend = 1;
+    document.getElementById('play').textContent='▶';
+    return;
+  }
+  if (IS_OBJ){
+    // object close-up: orbit the asset centre at 3/4 view, no camera path
+    let c = [0,0,0];
+    if (META.bbox) c = [ (META.bbox.min[0]+META.bbox.max[0])/2,
+                         (META.bbox.min[1]+META.bbox.max[1])/2,
+                         (META.bbox.min[2]+META.bbox.max[2])/2 ];
+    // frame the whole object: distance from its largest bbox side, not the
+    // pack "extent" (which is norm/3 and too tight for tall thin assets)
+    let big = META.extent;
+    if (META.bbox){ const d = [0,1,2].map(i => META.bbox.max[i]-META.bbox.min[i]); big = Math.max(...d); }
+    // open from the side the operator's crop saw it (META.front = object->camera),
+    // nudged to a 3/4 view; fall back to a fixed 3/4 angle
+    let yaw = 0.7;
+    if (META.front){
+      const f = norm(META.front);
+      yaw = Math.atan2(dot(f, AX), dot(f, AZ)) + 0.45;
+    }
+    V.target = c; V.dist = big*1.7; V.yaw = yaw; V.pitch = 0.12;
+    V.t=0; V.playing=false;
+    setMode('free'); V.blend = 1;
+    return;
+  }
+  const f = POSES.frames[0];
+  V.mode='rec'; V.blend=0; V.t=0; V.playing=false;
+  if (f){ V.target = f.p.slice(); }
+  V.dist = META.extent*0.6; V.yaw = 0; V.pitch = -0.25;
+  setMode('rec'); document.getElementById('play').textContent='▶';
+}
+
+// ---------------------------------------------------------------- cameras
+function recordedCam(t){
+  const F = POSES.frames; if(!F.length) return null;
+  const i = Math.max(0, Math.min(F.length-1, Math.floor(t)));
+  const j = Math.min(F.length-1, i+1), a = t - i;
+  const p = lerp3(F[i].p, F[j].p, a), q = slerp(F[i].q, F[j].q, a);
+  const R = quatToR(q);                       // world->cam
+  // colmap: x right, y down, z forward. GL wants y up, z back -> negate rows 1,2
+  const view = new Float32Array([
+    R[0][0], -R[1][0], -R[2][0], 0,
+    R[0][1], -R[1][1], -R[2][1], 0,
+    R[0][2], -R[1][2], -R[2][2], 0,
+    0,0,0,1]);
+  const t3 = [-(R[0][0]*p[0]+R[0][1]*p[1]+R[0][2]*p[2]),
+              -(R[1][0]*p[0]+R[1][1]*p[1]+R[1][2]*p[2]),
+              -(R[2][0]*p[0]+R[2][1]*p[1]+R[2][2]*p[2])];
+  view[12] = t3[0]; view[13] = -t3[1]; view[14] = -t3[2];
+  return {view, pos:p, name:F[i].name, idx:i};
+}
+// orbit basis built around the SCENE's real up axis (from the camera track),
+// not the world Y — otherwise every orbit comes out rolled sideways
+// The rig can be mounted rotated (these cameras sit 90 deg over), so the
+// camera's own "up" is not the world up. Keep all four in-plane candidates and
+// let the user roll between them instead of guessing.
+let UP_CANDS = [], upIdx = 0;
+function buildUpCandidates(){
+  const F = POSES.frames || [];
+  if (!F.length) { UP_CANDS = [[0,1,0]]; return; }
+  const acc = [[0,0,0],[0,0,0],[0,0,0]];
+  for (const f of F){
+    const R = quatToR(f.q);                 // world->cam
+    for (let r=0;r<3;r++) for (let c=0;c<3;c++) acc[r][c] += R[r][c];
+  }
+  const row = r => norm([acc[r][0], acc[r][1], acc[r][2]]);
+  const y = row(1), x = row(0);
+  // -Y is "camera up"; rolling 90 deg swaps it with +/-X
+  UP_CANDS = [[-y[0],-y[1],-y[2]], [-x[0],-x[1],-x[2]], y, x];
+}
+let UPV = [0,1,0], AX = [1,0,0], AZ = [0,0,1];
+function setUpAxis(u){
+  UPV = norm(u);
+  const ref = Math.abs(UPV[1]) < 0.9 ? [0,1,0] : [1,0,0];
+  AX = norm(cross(ref, UPV));
+  AZ = norm(cross(UPV, AX));
+}
+function orbitDir(){
+  const cp = Math.cos(V.pitch), sp = Math.sin(V.pitch);
+  return norm(add(add(scale(AX, cp*Math.sin(V.yaw)), scale(AZ, cp*Math.cos(V.yaw))), scale(UPV, sp)));
+}
+function freeCam(){
+  const eye = add(V.target, scale(orbitDir(), V.dist));
+  return {view: M4.lookAt(eye, V.target, UPV), pos: eye};
+}
+function blendView(A, B, t){                  // matrix lerp is fine for the short cross-fade
+  const o = new Float32Array(16); for(let i=0;i<16;i++) o[i] = A[i]*(1-t) + B[i]*t; return o;
+}
+// world distance between neighbouring points; grows when we draw fewer of them
+function spacingFor(frac){
+  const base = META.spacing || META.extent*0.002;
+  return base / Math.sqrt(Math.max(frac, 0.005));
+}
+function spacing(){ return spacingFor(V.budget); }
+
+// ------------------------------------------------- visible set (frustum+LOD)
+let CELLS = [], VIS = [], visIdx = 0, visPoints = 0;
+const TARGET_PX = 1.15;              // how tightly points should tile on screen
+function buildVisible(view, proj, fpx){
+  // clip-space planes from VP = proj * view  (row-major extraction on our
+  // column-major arrays), then a sphere test per cell
+  const V4 = view, Pm = proj, m = new Float32Array(16);
+  for (let c=0;c<4;c++) for (let r=0;r<4;r++){
+    let s=0; for(let k=0;k<4;k++) s += Pm[k*4+r]*V4[c*4+k]; m[c*4+r]=s;
+  }
+  const pl = [];
+  const row = i => [m[0*4+i], m[1*4+i], m[2*4+i], m[3*4+i]];
+  const r0=row(0), r1=row(1), r2=row(2), r3=row(3);
+  const mk = (a,b,s) => { const p=[a[0]+s*b[0], a[1]+s*b[1], a[2]+s*b[2], a[3]+s*b[3]];
+    const l=Math.hypot(p[0],p[1],p[2])||1; return [p[0]/l,p[1]/l,p[2]/l,p[3]/l]; };
+  pl.push(mk(r3,r0,1), mk(r3,r0,-1), mk(r3,r1,1), mk(r3,r1,-1), mk(r3,r2,1), mk(r3,r2,-1));
+
+  // camera position from the view matrix (R^T * -t)
+  const cam = [-(V4[0]*V4[12] + V4[1]*V4[13] + V4[2]*V4[14]),
+               -(V4[4]*V4[12] + V4[5]*V4[13] + V4[6]*V4[14]),
+               -(V4[8]*V4[12] + V4[9]*V4[13] + V4[10]*V4[14])];
+  const base = META.spacing || META.extent*0.002;
+  VIS.length = 0; visPoints = 0;
+  for (let i=0;i<CELLS.length;i++){
+    const c = CELLS[i];
+    let out = false;
+    for (let p=0;p<6;p++){ const q=pl[p];
+      if (q[0]*c[0] + q[1]*c[1] + q[2]*c[2] + q[3] < -c[3]) { out = true; break; } }
+    if (out) continue;
+    const dist = Math.max(Math.hypot(c[0]-cam[0], c[1]-cam[1], c[2]-cam[2]) - c[3], 1e-4);
+    const px = base * fpx / dist;                 // on-screen spacing of this cell
+    let frac = Math.min(1, Math.max(0.02, (px / TARGET_PX) * (px / TARGET_PX)));
+    const n = Math.max(1, Math.floor(c[5] * frac * V.budget));
+    VIS.push({start: c[4], n, frac: Math.max(n / c[5], 0.001), done: 0, d: dist});
+    visPoints += n;
+  }
+  VIS.sort((a,b) => a.d - b.d);                   // near first: the eye gets it soonest
+  visIdx = 0;
+}
+
+// ---------------------------------------------------------------- render
+let lastT = performance.now(), fpsAcc = 0, fpsN = 0, movingUntil = 0;
+let acc = 0, lastKey = '', chunkSize = 700000, drawFrac = 1, playHold = 0;
+function frame(now){
+  const dt = Math.min((now-lastT)/1000, 0.1); lastT = now;
+  // QUALITY-LOCKED PLAYBACK: the timeline only advances once the current pose
+  // has been fully accumulated, so every played frame shows the whole cloud at
+  // full resolution instead of a coarse subset with fat points
+  if (V.playing && POSES.frames.length){
+    playHold += dt;
+    const ready = (visIdx >= VIS.length) || playHold > 2.5;   // 2.5 s = safety valve only
+    if (ready){
+      // one fully-drawn frame == one real recorded frame, so playback never
+      // shows a half-built picture; speed just picks how many we step over
+      V.t += V.speed;
+      playHold = 0;
+      if (V.t >= POSES.frames.length-1){ V.t = POSES.frames.length-1; V.playing=false;
+        document.getElementById('play').textContent='▶'; }
+      document.getElementById('tl').value = V.t;
+    }
+  }
+  const targetBlend = (V.mode === 'free') ? 1 : 0;
+  V.blend += (targetBlend - V.blend) * Math.min(1, dt*4.5);
+
+  const rec = recordedCam(V.t), fre = freeCam();
+  const view = V.blend < 0.001 ? rec.view : (V.blend > 0.999 ? fre.view : blendView(rec.view, fre.view, V.blend));
+
+  const w = canvas.width, h = canvas.height;
+  const I = META.intrinsics;
+  const sc = h / I.h;                          // keep the recorded FOV vertically
+  const proj = M4.persp(I.fx*sc*(w/h)/(I.w/I.h), I.fy*sc, I.cx*sc*(w/h)/(I.w/I.h), I.cy*sc, w, h,
+                        META.extent*0.0008, META.extent*40);
+
+  ensureSceneFB(w, h);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFB);
+  gl.viewport(0,0,w,h); gl.clearColor(0.043,0.051,0.063,1);
+  gl.enable(gl.DEPTH_TEST);
+  gl.useProgram(P); gl.bindVertexArray(VAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufCol[V.colorSet] || bufCol[0]);
+  gl.vertexAttribPointer(1, 3, gl.UNSIGNED_BYTE, true, 0, 0);
+  gl.uniformMatrix4fv(U('uView'), false, view);
+  gl.uniformMatrix4fv(U('uProj'), false, proj);
+  const dpr = window.devicePixelRatio || 1;
+  // physical sizing: a point covers its own world spacing at its own distance,
+  // so surfaces stay closed when you fly in and never bloat when you pull back
+  gl.uniform1f(U('uScale'), V.pointScale * spacing() * (I.fy*sc));
+  gl.uniform1f(U('uMaxSize'), V.maxSize*dpr);
+  gl.uniform1f(U('uExposure'), V.exposure);
+  gl.uniform1i(U('uRound'), V.round ? 1 : 0);
+
+  // ---- progressive accumulation ------------------------------------------
+  // moving  : one adaptive chunk per frame, cleared -> always responsive
+  // still   : keep the framebuffer and draw the NEXT chunk each frame, so the
+  //           image refines to full detail within a few frames without ever
+  //           dropping the frame rate (this is what SuperSplat doesn't do)
+  // Visible-set rendering: throw away every cell outside the frustum, then
+  // thin only the FAR cells (their points land sub-pixel anyway). What is in
+  // front of you is always drawn at full density — that is what keeps the
+  // picture at "all 10M points" quality without paying for all 10M.
+  const dragging = now < movingUntil;
+  const key = view.join(',') + '|' + V.colorSet + '|' + V.pointScale + '|' + V.maxSize + '|' + V.budget;
+  if (key !== lastKey) { acc = 0; lastKey = key; visIdx = 0; buildVisible(view, proj, I.fy*sc); }
+  if (acc === 0 && visIdx === 0) gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  const interactive = dragging || V.playing;
+  const chunk = Math.max(150000, Math.min(N, Math.floor(interactive ? chunkSize : chunkSize * 2)));
+  let count = 0;
+  const baseSpacing = META.spacing || META.extent*0.002;
+  while (visIdx < VIS.length && count < chunk) {
+    const v = VIS[visIdx];
+    const take = Math.min(v.n - v.done, chunk - count);
+    if (take > 0) {
+      gl.uniform1f(U('uScale'), V.pointScale * (baseSpacing / Math.sqrt(v.frac)) * (I.fy*sc));
+      gl.drawArrays(gl.POINTS, v.start + v.done, take);
+      v.done += take; count += take; acc += take;
+    }
+    if (v.done >= v.n) visIdx++;
+  }
+  // keep each frame near 16 ms. GL draws are async, so the only honest signal
+  // is the real frame delta (dt) from the previous rAF, not the call duration.
+  if (count > 0) {
+    const ms = dt * 1000;
+    const f = ms > 22 ? 0.72 : (ms < 15 ? 1.18 : 1.0);
+    chunkSize = Math.max(120000, Math.min(N, chunkSize * f));
+  }
+  blitScene();                       // show the accumulation target
+  ovDraw(view, proj, now);           // labels + tracks live above the cloud
+
+  fpsAcc += 1/Math.max(dt,1e-4); fpsN++;
+  if (fpsN >= 20){ document.getElementById('fps').textContent = (fpsAcc/fpsN).toFixed(0); fpsAcc=0; fpsN=0;
+    document.getElementById('drawn').textContent = (acc/1e6).toFixed(2)+'M/' + (visPoints/1e6).toFixed(2)+'M'; }
+  const F = POSES.frames;
+  document.getElementById('tlab').textContent = `${Math.round(V.t)} / ${F.length?F.length-1:0}`;
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------- picking
+function ensurePickFB(){
+  if (pickFB) return;
+  pickFB = gl.createFramebuffer(); pickTex = gl.createTexture(); pickRB = gl.createRenderbuffer();
+}
+function pickAt(px, py){
+  ensurePickFB();
+  const w = canvas.width, h = canvas.height;
+  gl.bindTexture(gl.TEXTURE_2D, pickTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.bindRenderbuffer(gl.RENDERBUFFER, pickRB);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, pickFB);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pickTex, 0);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, pickRB);
+
+  const rec = recordedCam(V.t), fre = freeCam();
+  const view = V.blend < 0.5 ? rec.view : fre.view;
+  const I = META.intrinsics, sc = h / I.h;
+  const proj = M4.persp(I.fx*sc*(w/h)/(I.w/I.h), I.fy*sc, I.cx*sc*(w/h)/(I.w/I.h), I.cy*sc, w, h,
+                        META.extent*0.0008, META.extent*40);
+  gl.viewport(0,0,w,h); gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST); gl.useProgram(PP); gl.bindVertexArray(VAO);
+  gl.uniformMatrix4fv(UP('uView'), false, view);
+  gl.uniformMatrix4fv(UP('uProj'), false, proj);
+  gl.uniform1f(UP('uScale'), V.pointScale * spacingFor(Math.min(1, 3000000/N)) * (I.fy*sc));
+  gl.uniform1f(UP('uMaxSize'), V.maxSize*(window.devicePixelRatio||1));
+  gl.drawArrays(gl.POINTS, 0, Math.min(N, 3000000));
+  const px4 = new Uint8Array(4);
+  gl.readPixels(px, h-py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px4);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const id = px4[0] | (px4[1]<<8) | (px4[2]<<16);
+  if (!id) return null;
+  const i = id - 1;
+  return [POS[i*3], POS[i*3+1], POS[i*3+2]];
+}
+
+// Hand the free camera the EXACT pose the playback camera is in right now, so
+// pausing and dragging continues from that spot instead of jumping elsewhere.
+function camForwardOf(view){ return norm([-view[8], -view[9], -view[10]]); }
+function enterFreeFromRecorded(){
+  const c = recordedCam(V.t);
+  if (!c) { setMode('free'); return; }
+  const hit = pickAt(Math.round(canvas.width/2), Math.round(canvas.height/2));
+  const fwd = camForwardOf(c.view);
+  const d0 = Math.max(META.extent*0.01,
+                      hit ? len(sub(hit, c.pos)) : META.extent*0.15);
+  V.target = hit ? hit.slice() : add(c.pos, scale(fwd, d0));
+  V.dist = d0;
+  const d = norm(sub(c.pos, V.target));
+  V.pitch = Math.asin(Math.max(-0.95, Math.min(0.95, dot(d, UPV))));
+  V.yaw = Math.atan2(dot(d, AX), dot(d, AZ));
+  V.blend = 1;                       // views coincide: switch without a slide
+  setMode('free');
+}
+
+function focusOn(p, tight){
+  if (IS_OBJ){                       // close-up: a click just re-centres the orbit, no zoom
+    V.target = p.slice(); setMode('free'); V.blend = 1;
+    document.getElementById('focus').textContent = '';
+    return;
+  }
+  // local density probe: how far are neighbours? -> sensible orbit distance for small objects
+  let near = Infinity, cnt = 0;
+  const step = Math.max(1, Math.floor(N/400000));
+  for (let i=0;i<N;i+=step){
+    const dx=POS[i*3]-p[0], dy=POS[i*3+1]-p[1], dz=POS[i*3+2]-p[2];
+    const d2 = dx*dx+dy*dy+dz*dz;
+    if (d2 < 0.0025*META.extent*META.extent) cnt++;
+    if (d2 < near) near = d2;
+  }
+  const localScale = Math.max(META.extent*0.006, Math.sqrt(near)*40);
+  V.target = p.slice();
+  const cur0 = (V.blend<0.5 ? recordedCam(V.t) : freeCam()).pos;
+  // how far you were when you clicked sets the object's apparent size: a car at
+  // 10 m wants a few metres of orbit, a CCTV box at 2 m wants half a metre
+  const camDist = len(sub(cur0, p));
+  V.dist = tight ? Math.max(localScale*2.0, camDist*0.30)
+                 : Math.max(localScale*4.0, camDist*0.60);
+  const cur = cur0;
+  const d = norm(sub(cur, p));
+  V.pitch = Math.asin(Math.max(-0.95, Math.min(0.95, dot(d, UPV))));
+  V.yaw = Math.atan2(dot(d, AX), dot(d, AZ));
+  setMode('free');
+  document.getElementById('focus').textContent = 'focused ✓  (C — back to camera)';
+}
+
+// ---------------------------------------------------------------- input
+function setMode(m){
+  V.mode = m;
+  document.getElementById('mRec').classList.toggle('on', m==='rec');
+  document.getElementById('mFree').classList.toggle('on', m==='free');
+  document.getElementById('mode').textContent = m==='rec' ? 'recorded camera' : 'free orbit';
+  if (m==='rec') document.getElementById('focus').textContent='';
+}
+let drag = null;
+canvas.addEventListener('mousedown', e => {
+  drag = {x:e.clientX, y:e.clientY, btn:e.button, moved:0};
+  if (e.button===2) e.preventDefault();
+});
+window.addEventListener('mouseup', e => {
+  if (drag && drag.moved < 4 && e.button===0){                 // click = pick & focus
+    const r = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio||1;
+    const p = pickAt(Math.round((e.clientX-r.left)*dpr), Math.round((e.clientY-r.top)*dpr));
+    if (p) focusOn(p, true);
+  }
+  drag = null;
+});
+window.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const dx = e.clientX-drag.x, dy = e.clientY-drag.y;
+  drag.moved += Math.abs(dx)+Math.abs(dy); drag.x=e.clientX; drag.y=e.clientY;
+  if (V.mode!=='free'){ if (drag.moved>6){ V.playing=false;
+      document.getElementById('play').textContent='▶'; enterFreeFromRecorded(); } else return; }
+  movingUntil = performance.now()+250;
+  if (drag.btn===0){ V.yaw -= dx*0.004; V.pitch = Math.max(-1.35, Math.min(1.35, V.pitch + dy*0.004)); }
+  else { const f = V.dist*0.0016;
+    const fwd = orbitDir();
+    const right = norm(cross(UPV, fwd));
+    const up2 = norm(cross(fwd, right));
+    V.target = add(V.target, add(scale(right, dx*f), scale(up2, dy*f))); }
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('wheel', e => {
+  e.preventDefault(); movingUntil = performance.now()+250;
+  if (V.mode!=='free') enterFreeFromRecorded();
+  V.dist *= Math.exp(e.deltaY*0.0012);
+  V.dist = Math.max(META.extent*0.0008, Math.min(META.extent*8, V.dist));
+}, {passive:false});
+
+document.getElementById('play').onclick = () => {
+  V.playing = !V.playing; document.getElementById('play').textContent = V.playing?'⏸':'▶';
+  if (V.playing) setMode('rec');
+};
+document.getElementById('tl').oninput = e => { V.t = +e.target.value; setMode('rec'); };
+document.getElementById('speed').onchange = e => V.speed = +e.target.value;
+document.getElementById('mRec').onclick = () => setMode('rec');
+document.getElementById('mFree').onclick = () => setMode('free');
+document.getElementById('cRgb').onclick = () => { V.colorSet=0;
+  document.getElementById('cRgb').classList.add('on'); document.getElementById('cNrm').classList.remove('on'); };
+document.getElementById('cNrm').onclick = () => { if(!bufCol[1]) return; V.colorSet=1;
+  document.getElementById('cNrm').classList.add('on'); document.getElementById('cRgb').classList.remove('on'); };
+document.getElementById('sz').oninput = e => V.pointScale = +e.target.value;
+document.getElementById('mx').oninput = e => V.maxSize = +e.target.value;
+document.getElementById('budget').oninput = e => V.budget = +e.target.value/100;
+document.getElementById('exposure').oninput = e => V.exposure = +e.target.value;
+document.getElementById('round').onclick = e => { V.round=!V.round; e.target.classList.toggle('on', V.round); };
+document.getElementById('roll').onclick = () => {
+  if (!UP_CANDS.length) return;
+  upIdx = (upIdx + 1) % UP_CANDS.length;
+  const keep = V.target.slice(), d = V.dist;
+  setUpAxis(UP_CANDS[upIdx]);
+  V.target = keep; V.dist = d;
+  V.pitch = 0.15; V.yaw = 0;
+  setMode('free'); V.blend = 1; lastKey = '';
+  document.getElementById('focus').textContent = `up axis ${upIdx+1}/${UP_CANDS.length}`;
+};
+document.getElementById('reset').onclick = resetView;
+window.addEventListener('keydown', e => {
+  if (e.code==='Space'){ e.preventDefault(); document.getElementById('play').click(); }
+  if (e.key==='c' || e.key==='C'){ setMode('rec'); }
+  if (e.key==='1') document.getElementById('cRgb').click();
+  if (e.key==='2') document.getElementById('cNrm').click();
+  if (e.key==='r' || e.key==='R') resetView();
+  if (e.key==='f' || e.key==='F'){
+    const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio||1;
+    const p = pickAt(Math.round(canvas.width/2), Math.round(canvas.height/2));
+    if (p) focusOn(p, true);
+  }
+});
+function resize(){ const dpr = Math.min(window.devicePixelRatio||1, 2);
+  canvas.width = Math.floor(innerWidth*dpr); canvas.height = Math.floor(innerHeight*dpr); }
+window.addEventListener('resize', resize); resize();
+boot().catch(e => { document.getElementById('loadtxt').textContent = 'error: '+e.message; console.error(e); });
+</script>
+</body>
+</html>

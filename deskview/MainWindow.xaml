@@ -1,0 +1,379 @@
+<Window x:Class="NastDeskview.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Deskview" Width="1500" Height="950"
+        Background="{StaticResource Bg}" WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="68"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- ================= left rail ================= -->
+        <Border Grid.Column="0" Background="{StaticResource Panel}"
+                BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
+            <DockPanel LastChildFill="False">
+                <Border DockPanel.Dock="Top" Height="48" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                    <Border Width="26" Height="26" CornerRadius="6" Background="{StaticResource Accent}">
+                        <TextBlock Text="DV" FontWeight="Bold" FontSize="11" Foreground="{StaticResource OnAccent}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </Border>
+                <StackPanel DockPanel.Dock="Top" Margin="0,12,0,0">
+                    <Button x:Name="TabRecBtn" AutomationProperties.Name="RAIL_REC" Click="ShowRec" Width="52" Height="52" Margin="8,3"
+                            BorderThickness="0" Background="{StaticResource Raised}">
+                        <StackPanel>
+                            <Border Width="15" Height="15" BorderThickness="1.5" CornerRadius="2"
+                                    BorderBrush="{StaticResource Accent}"/>
+                            <TextBlock x:Name="RailRecLbl" Text="REC" Style="{StaticResource Eyebrow}" FontSize="8.5"
+                                       Foreground="{StaticResource Accent}" HorizontalAlignment="Center" Margin="0,5,0,0"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="TabMapBtn" AutomationProperties.Name="RAIL_MAP" Click="ShowMap" Width="52" Height="52" Margin="8,3"
+                            BorderThickness="0" Background="Transparent">
+                        <StackPanel>
+                            <Border Width="15" Height="15" BorderThickness="1.5" CornerRadius="8"
+                                    BorderBrush="{StaticResource Faint}"/>
+                            <TextBlock x:Name="RailMapLbl" Text="MAP" Style="{StaticResource Eyebrow}" FontSize="8.5"
+                                       HorizontalAlignment="Center" Margin="0,5,0,0"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="Tab3dBtn" AutomationProperties.Name="RAIL_3D" Click="Show3d" Width="52" Height="52" Margin="8,3"
+                            BorderThickness="0" Background="Transparent">
+                        <StackPanel>
+                            <Border Width="13" Height="13" BorderThickness="1.5"
+                                    BorderBrush="{StaticResource Faint}" RenderTransformOrigin="0.5,0.5">
+                                <Border.RenderTransform><RotateTransform Angle="45"/></Border.RenderTransform>
+                            </Border>
+                            <TextBlock x:Name="Rail3dLbl" Text="3D" Style="{StaticResource Eyebrow}" FontSize="8.5"
+                                       HorizontalAlignment="Center" Margin="0,7,0,0"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+                <Border DockPanel.Dock="Bottom" Padding="0,14" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+                    <StackPanel>
+                        <Ellipse x:Name="ApiDot" Width="7" Height="7" Fill="{StaticResource Go}" HorizontalAlignment="Center"/>
+                        <TextBlock Text="API" Style="{StaticResource Eyebrow}" FontSize="8.5"
+                                   HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                    </StackPanel>
+                </Border>
+            </DockPanel>
+        </Border>
+
+        <!-- ================= main ================= -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="48"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- top bar -->
+            <Border Grid.Row="0" Background="{StaticResource Panel}"
+                    BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                <DockPanel Margin="18,0" LastChildFill="False">
+                    <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock x:Name="LblDataset" Text="street_video" FontWeight="SemiBold" FontSize="13"/>
+                        <TextBlock x:Name="LblDatasetPath" Text="" FontFamily="{StaticResource Mono}" FontSize="11"
+                                   Foreground="{StaticResource Faint}" Margin="9,1,0,0"/>
+                        <Border Margin="16,0,0,0" Padding="9,4" CornerRadius="6" Background="{StaticResource Panel2}"
+                                BorderBrush="{StaticResource Line2}" BorderThickness="1" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="FRAMES" Style="{StaticResource Eyebrow}" Margin="0,0,7,0" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="LblFrames" Text="—" FontFamily="{StaticResource Mono}" FontSize="11"
+                                           Foreground="{StaticResource Fg2}" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Ellipse Width="6" Height="6" Fill="{StaticResource Go}" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="LblApi" Text="Backend…" FontFamily="{StaticResource Mono}" FontSize="11"
+                                   Foreground="{StaticResource Dim}" Margin="7,0,14,0" VerticalAlignment="Center"/>
+                        <Button x:Name="BtnOpen" Content="Open data folder" Click="OpenFolder"/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- ================= RECORDER ================= -->
+            <Grid Grid.Row="1" x:Name="PaneRec">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="372"/>
+                </Grid.ColumnDefinitions>
+
+                <Grid Grid.Column="0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="52"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="64"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- instrument strip -->
+                    <Border Grid.Row="0" Background="{StaticResource Bg}"
+                            BorderBrush="{StaticResource Panel2}" BorderThickness="0,0,0,1">
+                        <StackPanel Orientation="Horizontal" Margin="18,0" VerticalAlignment="Center">
+                            <TextBlock Text="CAM" Style="{StaticResource Eyebrow}" VerticalAlignment="Center" Margin="0,0,9,0"/>
+                            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line2}"
+                                    BorderThickness="1" CornerRadius="8" Padding="2">
+                                <StackPanel Orientation="Horizontal">
+                                    <Button x:Name="BtnCamA" Content="A" Click="CamA" BorderThickness="0" Padding="13,6" Margin="0"/>
+                                    <Button x:Name="BtnCamB" Content="B" Click="CamB" BorderThickness="0" Padding="13,6" Margin="2,0,0,0"/>
+                                </StackPanel>
+                            </Border>
+                            <TextBlock Text="LAYER" Style="{StaticResource Eyebrow}" VerticalAlignment="Center" Margin="20,0,9,0"/>
+                            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line2}"
+                                    BorderThickness="1" CornerRadius="8" Padding="2">
+                                <StackPanel Orientation="Horizontal">
+                                    <Button x:Name="BtnRgb" Content="RGB" Click="LayerRgb" BorderThickness="0" Padding="12,6" Margin="0"/>
+                                    <Button x:Name="BtnNx" Content="Normals" Click="LayerNx" BorderThickness="0" Padding="12,6" Margin="2,0,0,0"/>
+                                    <Button x:Name="BtnRoiNx" Content="ROI normals" Click="LayerRoiNx" BorderThickness="0" Padding="12,6" Margin="2,0,0,0"/>
+                                </StackPanel>
+                            </Border>
+                            <ComboBox x:Name="CmbVariant" Width="172" Margin="8,0,0,0" SelectionChanged="VariantChanged"
+                                      ToolTip="Which polarization product the Normals / ROI normals layer shows"/>
+                            <Border Width="1" Height="22" Background="{StaticResource Line}" Margin="20,0"/>
+                            <TextBlock Text="DRAW" Style="{StaticResource Eyebrow}" VerticalAlignment="Center" Margin="0,0,9,0"/>
+                            <Button x:Name="BtnRect" Content="Rectangle" Click="ToolRect"/>
+                            <Button x:Name="BtnPoly" Content="Polygon" Click="ToolPoly"/>
+                            <Grid Margin="8,0,0,0" VerticalAlignment="Center">
+                                <TextBox x:Name="TxtLabel" Width="150" VerticalContentAlignment="Center"
+                                         ToolTip="Object name (small objects: type the class — camera, sign…)"/>
+                                <TextBlock Text="Object name (lamp, sign…)" FontSize="11" IsHitTestVisible="False"
+                                           Foreground="{StaticResource Faint}" VerticalAlignment="Center" Margin="10,0,0,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=TxtLabel}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                            <TextBlock Text="Drag to box · double-click closes a polygon" FontSize="11"
+                                       Foreground="{StaticResource Faint}" VerticalAlignment="Center" Margin="22,0,0,0"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- stage -->
+                    <Border Grid.Row="1" ClipToBounds="True">
+                        <Border.Background>
+                            <RadialGradientBrush Center="0.5,0" GradientOrigin="0.5,0" RadiusX="1.2" RadiusY="0.9">
+                                <GradientStop Color="#121316" Offset="0"/>
+                                <GradientStop Color="#08090A" Offset="0.7"/>
+                            </RadialGradientBrush>
+                        </Border.Background>
+                        <Grid>
+                            <Border Margin="0,18" HorizontalAlignment="Center"
+                                    BorderBrush="{StaticResource Line2}" BorderThickness="1">
+                                <Border.Effect>
+                                    <DropShadowEffect Color="#000000" BlurRadius="60" ShadowDepth="18" Opacity="0.6"/>
+                                </Border.Effect>
+                                <Viewbox Stretch="Uniform">
+                                    <Grid x:Name="Stage" Width="1024" Height="1224" Background="Black">
+                                        <Image x:Name="ImgMain" Stretch="Fill"/>
+                                        <Image x:Name="ImgPunch" Stretch="Fill" Visibility="Collapsed"/>
+                                        <Canvas x:Name="Overlay" Background="Transparent"
+                                                MouseLeftButtonDown="OverlayDown" MouseMove="OverlayMove"
+                                                MouseLeftButtonUp="OverlayUp"/>
+                                    </Grid>
+                                </Viewbox>
+                            </Border>
+
+                            <!-- glass HUD: frame card -->
+                            <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="14"
+                                    Background="#B80B0C0D" BorderBrush="{StaticResource Line2}" BorderThickness="1"
+                                    CornerRadius="8" Padding="11,9">
+                                <StackPanel>
+                                    <TextBlock Text="FRAME" Style="{StaticResource Eyebrow}" FontSize="9"/>
+                                    <TextBlock x:Name="HudFrame" Text="—" FontFamily="{StaticResource Mono}" FontSize="15" Margin="0,4,0,3"/>
+                                    <TextBlock x:Name="HudMeta" Text="1024×1224 · rgb + nxyz" FontFamily="{StaticResource Mono}"
+                                               FontSize="10.5" Foreground="{StaticResource Dim}"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- glass HUD: ROI chip -->
+                            <Border x:Name="HudRoiChip" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="14"
+                                    Background="#B80B0C0D" BorderBrush="{StaticResource Line2}" BorderThickness="1"
+                                    CornerRadius="8" Padding="9,6" Visibility="Collapsed">
+                                <StackPanel Orientation="Horizontal">
+                                    <Ellipse Width="6" Height="6" Fill="{StaticResource Accent}" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="HudRoiText" Text="1 ROI on this frame" FontFamily="{StaticResource Mono}"
+                                               FontSize="10.5" Margin="6,0,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- toast -->
+                            <Border x:Name="ToastBox" Visibility="Collapsed" VerticalAlignment="Bottom"
+                                    HorizontalAlignment="Center" Margin="0,0,0,26" Padding="14,9"
+                                    CornerRadius="9" Background="#E60B0C0D"
+                                    BorderBrush="#6655DC78" BorderThickness="1">
+                                <TextBlock x:Name="ToastText" FontSize="12" FontWeight="Medium"/>
+                            </Border>
+                        </Grid>
+                    </Border>
+
+                    <!-- transport -->
+                    <Border Grid.Row="2" Background="{StaticResource Panel}"
+                            BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+                        <DockPanel Margin="18,0" LastChildFill="True">
+                            <Button Content="⏮" Click="StepBack" Width="32" Height="32" Padding="0" DockPanel.Dock="Left"/>
+                            <Button x:Name="BtnPlay" Content="▶" Click="TogglePlay" Width="38" Height="32" Padding="0"
+                                    Style="{StaticResource AccentBtn}" DockPanel.Dock="Left"/>
+                            <Button Content="⏭" Click="StepFwd" Width="32" Height="32" Padding="0" DockPanel.Dock="Left"/>
+                            <Button x:Name="BtnRev" Content="◀◀ Reverse" Click="ToggleReverse" DockPanel.Dock="Left" Margin="8,2,2,2"/>
+                            <Border DockPanel.Dock="Left" Background="#0D0E10" BorderBrush="{StaticResource Line2}"
+                                    BorderThickness="1" CornerRadius="7" Padding="2" Margin="8,0" VerticalAlignment="Center">
+                                <StackPanel x:Name="SpeedPanel" Orientation="Horizontal"/>
+                            </Border>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                                <TextBlock x:Name="LblPosCur" Text="0" FontFamily="{StaticResource Mono}" FontSize="14" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="LblPosMax" Text=" / 0" FontFamily="{StaticResource Mono}" FontSize="11"
+                                           Foreground="{StaticResource Faint}" VerticalAlignment="Bottom" Margin="2,0,0,1"/>
+                            </StackPanel>
+                            <Slider x:Name="Timeline" Minimum="0" Maximum="100" ValueChanged="TimelineChanged"
+                                    VerticalAlignment="Center" IsMoveToPointEnabled="True"/>
+                        </DockPanel>
+                    </Border>
+                </Grid>
+
+                <!-- ============ operations column ============ -->
+                <Border Grid.Column="1" Background="{StaticResource Panel}"
+                        BorderBrush="{StaticResource Line}" BorderThickness="1,0,0,0">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <!-- objects -->
+                            <Border Padding="16,14,16,12" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                                <StackPanel>
+                                    <DockPanel Margin="0,0,0,11">
+                                        <TextBlock Text="Objects" FontWeight="SemiBold" FontSize="12"/>
+                                        <TextBlock x:Name="LblObjCount" Text="0" FontFamily="{StaticResource Mono}" FontSize="10"
+                                                   Foreground="{StaticResource Faint}" HorizontalAlignment="Right"/>
+                                    </DockPanel>
+                                    <ItemsControl x:Name="ObjList"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- selected object -->
+                            <Border x:Name="PosePanel" Visibility="Collapsed" Padding="16,14" Background="{StaticResource CardAlt}"
+                                    BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                        <TextBlock x:Name="PoseTitle" Text="—" FontWeight="SemiBold" FontSize="12"/>
+                                        <TextBlock Text="SELECTED · 3D SOLVED" Style="{StaticResource Eyebrow}"
+                                                   Margin="8,2,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                        <StackPanel Margin="0,0,14,0">
+                                            <TextBlock Text="SIZE" Style="{StaticResource Eyebrow}" FontSize="9"/>
+                                            <TextBlock x:Name="LblSelSize" Text="—" FontFamily="{StaticResource Mono}" FontSize="11"
+                                                       Foreground="{StaticResource Fg2}" Margin="0,3,0,0"/>
+                                        </StackPanel>
+                                        <StackPanel>
+                                            <TextBlock Text="POINTS" Style="{StaticResource Eyebrow}" FontSize="9"/>
+                                            <TextBlock x:Name="LblSelPts" Text="—" FontFamily="{StaticResource Mono}" FontSize="11"
+                                                       Foreground="{StaticResource Fg2}" Margin="0,3,0,0"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <Grid Margin="0,0,0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="6"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Button x:Name="BtnAddObs" Grid.Column="0" Content="+ Add view" Click="AddObs"
+                                                HorizontalAlignment="Stretch" Padding="10,10"
+                                                ToolTip="Outline the same object in another frame yourself"/>
+                                        <Button x:Name="BtnAutoViews" Grid.Column="2" Content="⟲ Auto views" Click="AutoViews"
+                                                HorizontalAlignment="Stretch" Padding="10,10"
+                                                ToolTip="Find this object in other frames automatically (poses + depth + template check)"/>
+                                    </Grid>
+                                    <TextBlock x:Name="LblViews" Text="" FontSize="10.5" Foreground="{StaticResource Dim}"
+                                               TextWrapping="Wrap" Margin="0,0,0,6"/>
+                                    <Button x:Name="BtnRecon" Content="Detailed reconstruction" Click="Reconstruct"
+                                            Style="{StaticResource AccentBtn}" HorizontalAlignment="Stretch" Padding="12,11"/>
+                                    <Button x:Name="BtnAugment" Content="Export augmentation set" Click="ExportAugment"
+                                            HorizontalAlignment="Stretch" Padding="12,9" Margin="0,6,0,0"
+                                            ToolTip="Real crops × all layers × views + synthetic renders of the layered mesh from a pose grid (manifest.json)"/>
+                                    <TextBlock Text="Generative 3D model from the ROI. Typically 3–8 min on the GPU node."
+                                               FontSize="10.5" Foreground="{StaticResource Faint}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- build map -->
+                            <Border Padding="16,14" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                                <StackPanel>
+                                    <TextBlock Text="BUILD POINT CLOUD" Style="{StaticResource Eyebrow}" Margin="0,0,0,9"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="1.4*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Button Grid.Column="0" Content="A" Tag="A" Click="BuildMap" FontFamily="{StaticResource Mono}" FontWeight="SemiBold"/>
+                                        <Button Grid.Column="1" Content="B" Tag="B" Click="BuildMap" FontFamily="{StaticResource Mono}" FontWeight="SemiBold"/>
+                                        <Button Grid.Column="2" Content="A + B" Tag="AB" Click="BuildMap" FontFamily="{StaticResource Mono}" FontWeight="SemiBold"
+                                                Background="{StaticResource Raised2}" BorderBrush="{StaticResource LineHover}"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- jobs -->
+                            <Border Padding="16,13,16,14">
+                                <StackPanel>
+                                    <DockPanel Margin="0,0,0,10">
+                                        <TextBlock Text="Jobs" FontWeight="SemiBold" FontSize="12"/>
+                                        <TextBlock x:Name="LblJobsSummary" Text="" Style="{StaticResource Eyebrow}"
+                                                   HorizontalAlignment="Right"/>
+                                    </DockPanel>
+                                    <ItemsControl x:Name="JobsList"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+
+            <!-- ================= MAP ================= -->
+            <Grid Grid.Row="1" x:Name="PaneMap" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="44"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+                    <StackPanel Orientation="Horizontal" Margin="18,0" VerticalAlignment="Center">
+                        <TextBlock Text="CLOUD" Style="{StaticResource Eyebrow}" VerticalAlignment="Center" Margin="0,0,9,0"/>
+                        <ComboBox x:Name="CmbScene" Width="320" VerticalContentAlignment="Center"
+                                  SelectionChanged="SceneChanged"/>
+                        <Button Content="⟳" Click="ReloadScenes" ToolTip="Refresh scene list" Margin="6,0,0,0"/>
+                        <TextBlock Text="click = orbit a point · wheel = zoom" FontSize="11"
+                                   Foreground="{StaticResource Faint}" VerticalAlignment="Center" Margin="18,0,0,0"/>
+                    </StackPanel>
+                </Border>
+                <wv2:WebView2 x:Name="Web" Grid.Row="1"/>
+            </Grid>
+
+            <!-- ================= OBJECTS ================= -->
+            <Grid Grid.Row="1" x:Name="Pane3d" Visibility="Collapsed">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="280"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
+                    <StackPanel>
+                        <TextBlock Text="Generated objects" FontWeight="SemiBold" FontSize="12" Margin="14,14,14,4"/>
+                        <TextBlock Text="drag to rotate · wheel to zoom" FontSize="10.5"
+                                   Foreground="{StaticResource Faint}" Margin="14,0,14,10"/>
+                        <StackPanel x:Name="RenderList" Margin="10,0"/>
+                        <Button Content="⟳ Refresh" Click="ReloadRenders" Margin="14,10"/>
+                        <TextBlock x:Name="LblRender" Margin="14,4" Foreground="{StaticResource Dim}" FontSize="11"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+                <wv2:WebView2 x:Name="Web2" Grid.Column="1"/>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>
