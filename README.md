@@ -32,28 +32,37 @@ scenes/obj_job_N: point + splat + MESH close-ups, layer sets baked,
 | `local_gpu/`   | VGGT-Omega local runner + model wrapper (`dx_wrap`)        |
 | `deskview/`    | WPF desktop app (attaches to the service)                  |
 
-## Setup
+## Quick start — Linux
 
 ```
-python -m venv venv
-venv/Scripts/pip install -r requirements.txt
-# torch for YOUR cuda, e.g.:
-venv/Scripts/pip install torch --index-url https://download.pytorch.org/whl/cu128
+git clone <this repo> && cd nast-local-pipeline
+bash install.sh          # venv + deps + torch (GPU-matched) + weights + desktop shortcut
+./run.sh                 # or click the "NAST Deskview" shortcut
 ```
 
-Model weights (not in git): put `vggt_omega_1b_512.pt` (~4.6 GB) into
-`local_gpu/models/` — see `local_gpu/models/README.md`.
+The shortcut starts the local service and opens the GUI as an app window
+(chromium/chrome `--app`, falls back to the default browser). On Linux the
+GUI is the web app — same screens and API as the Windows desktop app.
+`SKIP_TORCH=1 bash install.sh` for a CPU-only install (no map rebuild).
+
+## Quick start — Windows
+
+```
+git clone <this repo> ; cd nast-local-pipeline
+powershell -ExecutionPolicy Bypass -File install.ps1   # + builds the WPF app if .NET 8 SDK exists
+```
+
+Click the "NAST Deskview" desktop shortcut (`run.bat`): service + WPF app,
+or the browser GUI when the app is not built.
+
+Model weights (not in git): `install.sh` pulls `vggt_omega_1b_512.pt`
+(~4.6 GB) from tex1 automatically when it is reachable; otherwise put it
+into `local_gpu/models/` by hand — see `local_gpu/models/README.md`.
 
 Data lives NEXT to the repo dirs (gitignored): `viewer/scenes/...` — the
 street pack (`pos.f32`, `rgb.u8`, `poses.json`, `meta.json`),
-`street_video/{rgb,rgb_orig,depth,layers}`.
-
-## Run
-
-```
-venv/Scripts/python -u inspector/server.py 8130     # the service
-dotnet run --project deskview                       # or the published exe
-```
+`street_video/{rgb,rgb_orig,depth,layers}`. The service boots without any
+data (poses from `inspector/scene_base`) so a fresh clone opens fine.
 
 * Draw an ROI in the recorder → **Reconstruct**: the object is cut out of
   the dense map (no generative model, ~1-2 min CPU), placed back into the
