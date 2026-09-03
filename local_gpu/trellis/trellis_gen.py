@@ -25,6 +25,8 @@ import imageio
 import numpy as np
 import torch
 from PIL import Image
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import blackwell_shim  # noqa: F401  (RTX 50xx: route xformers to its CUTLASS kernels)
 sys.path.insert(0, os.environ.get("TRELLIS_DIR", os.path.expanduser("~/nast_trellis/TRELLIS")))
 from trellis.pipelines import TrellisImageTo3DPipeline
 from trellis.utils import render_utils

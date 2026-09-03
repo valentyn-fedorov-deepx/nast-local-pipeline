@@ -5,7 +5,7 @@
 #
 # Two proven pin sets, picked by the GPU generation:
 #   * Ampere / Ada  (RTX 30xx / 40xx, A-series)  -> torch 2.4.0+cu121 stack
-#   * Blackwell     (RTX 50xx, sm_120)           -> torch 2.7.0+cu128 stack
+#   * Blackwell     (RTX 50xx, sm_120)           -> torch 2.8.0+cu128 stack
 # The flags that matter: ATTN_BACKEND=xformers (no flash-attn source build),
 # SPCONV_ALGO=native (skips the auto-tuner that hangs on first run), and
 # --no-build-isolation for the three extensions that import torch in setup.py.
@@ -61,10 +61,10 @@ if [ "$GEN" = ampere ]; then
   SPC="spconv-cu120==2.3.6"
   ARCH="8.6;8.9"
 else
-  TORCH="torch==2.7.0 torchvision==0.22.0"; TIDX=https://download.pytorch.org/whl/cu128
+  TORCH="torch==2.8.0 torchvision==0.23.0"; TIDX=https://download.pytorch.org/whl/cu128
   CUDA_TK=12.8
-  XF="xformers==0.0.30"
-  KAO="kaolin==0.18.0"; KIDX=https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.7.0_cu128.html
+  XF="xformers==0.0.32.post2"          # its flash ops are wrong for sm_120 -> blackwell_shim routes to CUTLASS
+  KAO="kaolin==0.18.0"; KIDX=https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.8.0_cu128.html
   SPC="spconv-cu126==2.3.8"
   ARCH="8.6;8.9;12.0"
 fi
@@ -90,7 +90,7 @@ pip install wheel setuptools ninja pillow imageio imageio-ffmpeg tqdm easydict \
     pyvista pymeshfix igraph "transformers==4.46.3" safetensors huggingface_hub plyfile \
     timm realesrgan basicsr --extra-index-url https://pypi.org/simple || exit 1
 pip install $XF --index-url $TIDX --extra-index-url https://pypi.org/simple || exit 1
-pip install $KAO -f $KIDX || exit 1
+pip install --force-reinstall --no-deps $KAO -f $KIDX || exit 1   # same version, different torch build
 pip install $SPC || exit 1
 pip install git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8 || exit 1
 # basicsr 1.4.2 imports a torchvision module that was removed in 0.17 — one-line fix

@@ -16,11 +16,9 @@ command -v conda >/dev/null 2>&1 || { echo "conda not found (run install_trellis
 conda activate "$ENV_NAME"
 export TRELLIS_DIR="${TRELLIS_DIR:-$ROOT/TRELLIS}"
 export REALESRGAN_WEIGHTS="${REALESRGAN_WEIGHTS:-$ROOT/weights/RealESRGAN_x4plus.pth}"
-# attention backend by GPU generation: xformers' wheels carry no sm_120 kernels,
-# so Blackwell (RTX 50xx) runs on PyTorch's own SDPA; everything older on xformers
-CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1)
-if [ -n "$CC" ] && [ "${CC%%.*}" -ge 10 ]; then ATTN=sdpa; else ATTN=xformers; fi
-export ATTN_BACKEND="${ATTN_BACKEND:-$ATTN}" SPCONV_ALGO=native
+# xformers everywhere (TRELLIS' sparse attention knows only xformers/flash_attn);
+# on Blackwell trellis_gen.py's blackwell_shim steers it to the CUTLASS kernels
+export ATTN_BACKEND="${ATTN_BACKEND:-xformers}" SPCONV_ALGO=native
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"   # less fragmentation on small cards
 # the weights live in the install's own caches (see install_trellis.sh)
 export HF_HOME="${HF_HOME:-$ROOT/cache/hf}" TORCH_HOME="${TORCH_HOME:-$ROOT/cache/torch}"
