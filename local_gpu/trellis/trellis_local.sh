@@ -16,6 +16,14 @@ command -v conda >/dev/null 2>&1 || { echo "conda not found (run install_trellis
 conda activate "$ENV_NAME"
 PY="$ROOT/miniconda3/envs/$ENV_NAME/bin/python"
 [ -x "$PY" ] || { echo "no python in env $ENV_NAME under $ROOT (run install_trellis.sh)"; exit 2; }
+# nvdiffrast JIT-compiles its torch plugin on first use: same toolchain as the install
+export CUDA_HOME="$CONDA_PREFIX" PATH="$CONDA_PREFIX/bin:$PATH"
+TGT="$CONDA_PREFIX/targets/x86_64-linux"
+export CPATH="$TGT/include:$CONDA_PREFIX/include${CPATH:+:$CPATH}"
+export LIBRARY_PATH="$TGT/lib:$CONDA_PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$TGT/lib:$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+[ -x "$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++" ] &&   export CC="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-cc" CXX="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++"
+export TORCH_EXTENSIONS_DIR="$ROOT/cache/torch_extensions"     # JIT builds off the root disk
 export TRELLIS_DIR="${TRELLIS_DIR:-$ROOT/TRELLIS}"
 export REALESRGAN_WEIGHTS="${REALESRGAN_WEIGHTS:-$ROOT/weights/RealESRGAN_x4plus.pth}"
 # xformers everywhere (TRELLIS' sparse attention knows only xformers/flash_attn);
