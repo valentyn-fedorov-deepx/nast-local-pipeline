@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# NAST Deskview launcher (Linux): starts the local service if it is not up
-# and opens the GUI as an app window (chromium/chrome) or the default browser.
+# NAST Deskview launcher (Linux): (re)starts the local service FROM THIS TREE
+# and opens the desktop app. Safe to click any time — a stale service from an
+# older install is replaced, a running one of this tree is reused.
 cd "$(dirname "$0")"
 PY=venv/bin/python
 [ -x "$PY" ] || PY=$(command -v python3 || command -v python)
 
-up() { curl -s -o /dev/null --max-time 1 http://127.0.0.1:8130/api/meta; }
+up()   { curl -s -o /dev/null --max-time 1 http://127.0.0.1:8130/api/meta; }
+ours() { curl -s --max-time 1 http://127.0.0.1:8130/api/decode_status | grep -q '"total"'; }
 
+if up && ! ours; then
+  # something else answers on 8130 (an older install) -> replace it
+  fuser -k 8130/tcp >/dev/null 2>&1 || pkill -f "server.py 8130" 2>/dev/null
+  sleep 2
+fi
 if ! up; then
   nohup "$PY" -u inspector/server.py 8130 > inspector/srv.log 2> inspector/srv.err &
   for i in $(seq 1 60); do up && break; sleep 0.5; done
