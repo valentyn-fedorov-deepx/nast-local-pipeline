@@ -19,10 +19,10 @@ venv/bin/pip install PySide6
 if [ "${SKIP_TORCH:-0}" != "1" ]; then
   echo "== torch =="
   if command -v nvidia-smi >/dev/null 2>&1; then
-    venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu128
+    venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
   else
     echo "no NVIDIA GPU detected — installing CPU torch (the VGGT map rebuild needs a GPU)"
-    venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+    venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
   fi
 fi
 

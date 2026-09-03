@@ -4,5 +4,7 @@ scipy
 trimesh
 scikit-image
 huggingface_hub
-# torch: install for your CUDA, e.g.
-#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+einops
+pillow
+# torch + torchvision: install for your CUDA from the same index, e.g.
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
