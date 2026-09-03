@@ -38,7 +38,16 @@ if [ ! -f "$ROOT/miniconda3/etc/profile.d/conda.sh" ]; then
   bash "$ROOT/miniconda.sh" -b -p "$ROOT/miniconda3" || exit 1
 fi
 source "$ROOT/miniconda3/etc/profile.d/conda.sh"
-: > "$ROOT/condarc"; export CONDARC="$ROOT/condarc"          # ignore ~/.condarc (envs_dirs etc.)
+# private condarc (ignores ~/.condarc): conda-forge + nvidia only — the Anaconda
+# "defaults" channels need an interactive Terms-of-Service click on conda >= 25
+cat > "$ROOT/condarc" <<'CRC'
+channels:
+  - conda-forge
+  - nvidia
+channel_priority: flexible
+CRC
+export CONDARC="$ROOT/condarc"
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main     --channel https://repo.anaconda.com/pkgs/r >/dev/null 2>&1 || true
 export CONDA_ENVS_PATH="$ROOT/miniconda3/envs"
 conda --version || { echo "conda unavailable"; exit 1; }
 
@@ -52,7 +61,7 @@ echo "GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | he
 PY="$ROOT/miniconda3/envs/$ENV_NAME/bin/python"
 if [ ! -x "$PY" ]; then                       # absent or a half-made env from a killed run
   conda env remove -n "$ENV_NAME" -y >/dev/null 2>&1; rm -rf "$ROOT/miniconda3/envs/$ENV_NAME"
-  conda create -y -n "$ENV_NAME" python=3.10 || exit 1
+  conda create -y --override-channels -c conda-forge -n "$ENV_NAME" python=3.10 || exit 1
 fi
 conda activate "$ENV_NAME"
 [ -x "$PY" ] || { echo "env has no python: $PY"; exit 1; }
@@ -82,7 +91,7 @@ $PY -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" || {
 
 # nvcc for the extensions, exactly torch's CUDA line
 if ! "$CONDA_PREFIX/bin/nvcc" --version >/dev/null 2>&1; then
-  conda install -y -c nvidia "cuda-toolkit=$CUDA_TK" || conda install -y -c "nvidia/label/cuda-$CUDA_TK.0" cuda-toolkit || exit 1
+  conda install -y --override-channels -c nvidia -c conda-forge "cuda-toolkit=$CUDA_TK" ||   conda install -y --override-channels -c "nvidia/label/cuda-$CUDA_TK.0" -c conda-forge cuda-toolkit || exit 1
 fi
 export CUDA_HOME="$CONDA_PREFIX"
 export PATH="$CONDA_PREFIX/bin:$PATH"
