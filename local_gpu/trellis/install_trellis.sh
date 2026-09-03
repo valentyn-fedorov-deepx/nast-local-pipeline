@@ -125,6 +125,18 @@ export CPATH="$TGT/include:$CONDA_PREFIX/include${CPATH:+:$CPATH}"
 export LIBRARY_PATH="$TGT/lib:$CONDA_PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
 export LD_LIBRARY_PATH="$TGT/lib:$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ls "$TGT/include/cusparse.h" "$CONDA_PREFIX/include/cusparse.h" 2>/dev/null | head -2
+# torch links CUDA extensions with -L$CUDA_HOME/lib64 -lcudart: give the conda env a
+# lib64 (-> lib) and the unversioned dev symlinks some 12.x packages leave out;
+# conda's gcc is a cross-compiler and ignores LIBRARY_PATH, so also pass -L via LDFLAGS
+[ -e "$CONDA_PREFIX/lib64" ] || ln -s lib "$CONDA_PREFIX/lib64"
+for so in "$TGT"/lib/lib*.so.[0-9]*; do
+  [ -e "$so" ] || continue
+  base=$(basename "$so"); name="${base%%.so.*}.so"
+  [ -e "$TGT/lib/$name" ] || ln -s "$base" "$TGT/lib/$name"
+  [ -e "$CONDA_PREFIX/lib/$name" ] || ln -s "../targets/x86_64-linux/lib/$name" "$CONDA_PREFIX/lib/$name"
+done
+export LDFLAGS="${LDFLAGS:-} -L$TGT/lib -L$CONDA_PREFIX/lib"
+ls -la "$CONDA_PREFIX/lib/libcudart.so" 2>&1 | sed "s#$CONDA_PREFIX#\$ENV#"
 export TORCH_CUDA_ARCH_LIST="$ARCH"
 export MAX_JOBS="${MAX_JOBS:-$(nproc)}"
 nvcc --version | tail -1
