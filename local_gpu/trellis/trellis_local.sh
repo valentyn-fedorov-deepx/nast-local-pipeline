@@ -10,12 +10,19 @@ ROOT="${NAST_TRELLIS_ROOT:-$( [ -f "$HERE/ROOT" ] && cat "$HERE/ROOT" || echo "$
 ENV_NAME="${NAST_TRELLIS_ENV:-trellis}"
 J="$1"
 [ -d "$J/crops" ] || { echo "no crops in $J"; exit 2; }
-[ -f "$ROOT/miniconda3/etc/profile.d/conda.sh" ] && source "$ROOT/miniconda3/etc/profile.d/conda.sh"
-export CONDARC="$ROOT/condarc" CONDA_ENVS_PATH="$ROOT/miniconda3/envs"
-command -v conda >/dev/null 2>&1 || { echo "conda not found (run install_trellis.sh)"; exit 2; }
-conda activate "$ENV_NAME"
-PY="$ROOT/miniconda3/envs/$ENV_NAME/bin/python"
-[ -x "$PY" ] || { echo "no python in env $ENV_NAME under $ROOT (run install_trellis.sh)"; exit 2; }
+if [ -x "$ROOT/env/bin/python" ]; then
+  # relocatable conda-pack env (unpack_trellis.sh): activation runs the packages' hooks too
+  source "$ROOT/env/bin/activate"
+  PY="$ROOT/env/bin/python"
+else
+  [ -f "$ROOT/miniconda3/etc/profile.d/conda.sh" ] && source "$ROOT/miniconda3/etc/profile.d/conda.sh"
+  export CONDARC="$ROOT/condarc" CONDA_ENVS_PATH="$ROOT/miniconda3/envs"
+  command -v conda >/dev/null 2>&1 || { echo "conda not found (run install_trellis.sh)"; exit 2; }
+  conda activate "$ENV_NAME"
+  PY="$ROOT/miniconda3/envs/$ENV_NAME/bin/python"
+fi
+[ -x "$PY" ] || { echo "no python in the TRELLIS env under $ROOT (run install_trellis.sh or unpack_trellis.sh)"; exit 2; }
+export CONDA_PREFIX="${CONDA_PREFIX:-$(dirname "$(dirname "$PY")")}"
 # nvdiffrast JIT-compiles its torch plugin on first use: same toolchain as the install
 export CUDA_HOME="$CONDA_PREFIX" PATH="$CONDA_PREFIX/bin:$PATH"
 TGT="$CONDA_PREFIX/targets/x86_64-linux"
