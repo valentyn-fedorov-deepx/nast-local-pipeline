@@ -68,6 +68,9 @@ conda activate "$ENV_NAME"
 PIP="$PY -m pip"                              # never the system pip (it would install into ~/.local on the root disk)
 export PIP_USER=0 PYTHONNOUSERSITE=1          # and the env never sees ~/.local packages (stale nvidia-* there broke torch)
 $PIP install -q --upgrade pip
+# git for the source installs (utils3d, TRELLIS, the extensions): from conda-forge when the box has none
+command -v git >/dev/null 2>&1 || conda install -y --override-channels -c conda-forge git || exit 1
+export PATH="$ROOT/miniconda3/envs/$ENV_NAME/bin:$PATH"
 if [ "$GEN" = ampere ]; then
   TORCH="torch==2.4.0 torchvision==0.19.0"; TIDX=https://download.pytorch.org/whl/cu121
   CUDA_TK=12.1
