@@ -22,7 +22,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QUrl
 from PySide6.QtGui import (QAction, QColor, QGuiApplication, QImage, QPainter,
                            QPainterPath, QPen, QPixmap, QTransform)
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFrame,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame,
                                QHBoxLayout, QLabel, QLineEdit, QMainWindow,
                                QPushButton, QScrollArea, QSizePolicy, QSlider,
                                QStackedWidget, QVBoxLayout, QWidget)
@@ -250,6 +250,7 @@ class Deskview(QMainWindow):
         self._decode_overlay()
         self.load_folder()
         self.connect_api()
+        self.sync_dataset()
         self.decode_timer = QTimer(self); self.decode_timer.timeout.connect(self.poll_decode)
         self.decode_timer.start(1000)
         self.poll_decode()
@@ -762,10 +763,35 @@ class Deskview(QMainWindow):
         self.lbl_render.setText(f"{title} · job #{jid}")
 
     def open_folder(self):
-        if os.name == "nt":
-            os.startfile(str(ROOT))            # noqa
-        else:
-            subprocess.Popen(["xdg-open", str(ROOT)])
+        """pick a scene folder (rgb/ + raw/): the service switches to it and
+        starts the decode; the recorder reloads from it"""
+        global ROOT
+        d = QFileDialog.getExistingDirectory(self, "Open data folder (rgb + raw)", str(ROOT.parent))
+        if not d:
+            return
+        try:
+            r = api_post("/api/open_dataset", {"path": d}, timeout=30)
+        except Exception as ex:
+            self.toast(f"open failed: {ex}", bad=True); return
+        ROOT = Path(r["path"])
+        self.lbl_path.setText(str(ROOT))
+        self.cache.clear(); self.cache_order.clear(); self.pos = 0
+        self.load_folder()
+        self.toast(f"dataset: {r['frames']} frames, raw {r['raw']}, decoded {r['decoded']}")
+        self.poll_decode()
+
+    def sync_dataset(self):
+        """on start: follow whatever folder the service currently serves"""
+        global ROOT
+        try:
+            r = api_get("/api/dataset", timeout=3)
+            p = Path(r["path"])
+            if p.exists() and p != ROOT:
+                ROOT = p
+                self.lbl_path.setText(str(ROOT))
+                self.load_folder()
+        except Exception:
+            pass
 
     # -------------------------- raw-import decode gate -----------------------------
     def _decode_overlay(self):

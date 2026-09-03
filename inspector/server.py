@@ -86,6 +86,66 @@ def ensure_layer_frames(names):
                 print("live decode failed:", stem, e, flush=True)
 
 
+# ---- up-front batch decode (raw import -> locked catalog, with progress) ----------
+DECODE = {"running": False, "total": 0, "done": 0, "err": 0, "started": 0}
+
+
+def decode_counts():
+    total = len(list((VIDEO_DIR / "raw").glob("*.raw12"))) if (VIDEO_DIR / "raw").exists() else 0
+    nx = VIDEO_DIR / "layers" / LIVE_PRODUCTS[0]
+    done = len(list(nx.glob("*.jpg"))) if nx.exists() else 0
+    return total, done
+
+
+def run_decode():
+    try:
+        total, _ = decode_counts()
+        DECODE.update(running=True, total=total, err=0, started=time.time())
+        proc = subprocess.Popen([sys.executable, "-u", str(MONO / "decode_raw.py"),
+                                 str(VIDEO_DIR), "6"],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("DECODE_PROGRESS") or line.startswith("DECODE_DONE"):
+                _, done = decode_counts()
+                DECODE["done"] = done
+            if line.startswith("ERR"):
+                DECODE["err"] += 1
+        proc.wait()
+        _, done = decode_counts()
+        DECODE["done"] = done
+    except Exception as e:
+        print("decode run failed:", e, flush=True)
+    finally:
+        DECODE["running"] = False
+
+
+def start_decode_if_needed():
+    """kick the batch decode when raw/ exists but the catalog is incomplete"""
+    if DECODE["running"] or not (VIDEO_DIR / "raw").exists():
+        return
+    total, done = decode_counts()
+    if total and done < total:
+        threading.Thread(target=run_decode, daemon=True).start()
+
+
+def open_dataset(path):
+    """point the service at another scene folder (rgb/ + raw/ [+ rgb_orig, depth])
+    and start its decode when needed. The map/poses stay; frames, raw, layers,
+    reconstruction crops all follow the new folder."""
+    global VIDEO_DIR, DEPTH_DIR
+    p = Path(path).expanduser().resolve()
+    if not (p / "rgb").exists():
+        raise ValueError(f"no rgb/ inside {p}")
+    VIDEO_DIR = p
+    DEPTH_DIR = p / "depth"
+    DECODE.update(running=False, done=0, err=0, started=0)
+    start_decode_if_needed()
+    total, done = decode_counts()
+    return {"path": str(p), "frames": len(list((p / "rgb").glob("*.jpg"))),
+            "raw": total, "decoded": done, "decoding": DECODE["running"]}
+
+
 def build_point_asset(box, out_ply, cap=1_500_000, margin=1.25):
     """Local (no-TRELLIS) asset: dense-cloud points inside the solved box,
     written as a TRELLIS-style gaussian PLY so the whole downstream chain
@@ -166,6 +226,11 @@ def load_scene():
     STATE["pos"] = pos
     STATE["by_name"] = {f["name"]: f for f in poses["frames"]}
     print(f"[scene] cloud {len(pos):,} pts, {len(poses['frames'])} poses", flush=True)
+    # raw import present but catalog not fully decoded -> kick the batch decode
+    try:
+        start_decode_if_needed()
+    except Exception as e:
+        print("decode autostart skipped:", e, flush=True)
 
 
 def quat_to_R(q):
@@ -1358,6 +1423,21 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/jobs":
             c = db(); rows = [dict(r) for r in c.execute("SELECT * FROM jobs ORDER BY id DESC").fetchall()]; c.close()
             return self._send(200, rows)
+        if p == "/api/dataset":
+            total, done = decode_counts()
+            return self._send(200, {"path": str(VIDEO_DIR), "raw": total, "decoded": done,
+                                    "frames": len(list((VIDEO_DIR / "rgb").glob("*.jpg")))
+                                    if (VIDEO_DIR / "rgb").exists() else 0})
+        if p == "/api/decode_status":
+            total, done = decode_counts()
+            DECODE["done"] = done; DECODE["total"] = total
+            eta = 0
+            if DECODE["running"] and done and DECODE["started"]:
+                rate = (time.time() - DECODE["started"]) / max(done, 1)
+                eta = int(rate * (total - done))
+            return self._send(200, {"running": DECODE["running"], "total": total,
+                                    "done": done, "err": DECODE["err"],
+                                    "complete": total > 0 and done >= total, "eta": eta})
         return self._send(404, {"error": "no route"})
 
     def _body(self):
@@ -1370,6 +1450,15 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path); p = u.path
+        if p == "/api/open_dataset":
+            try:
+                return self._send(200, open_dataset(self._body().get("path", "")))
+            except Exception as e:
+                return self._send(422, {"error": str(e)})
+        if p == "/api/decode":
+            start_decode_if_needed()
+            total, done = decode_counts()
+            return self._send(200, {"running": DECODE["running"], "total": total, "done": done})
         if p == "/api/roi":
             b = self._body()
             with LOCK:
