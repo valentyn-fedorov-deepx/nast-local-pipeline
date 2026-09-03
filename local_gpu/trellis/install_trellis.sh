@@ -66,7 +66,7 @@ fi
 conda activate "$ENV_NAME"
 [ -x "$PY" ] || { echo "env has no python: $PY"; exit 1; }
 PIP="$PY -m pip"                              # never the system pip (it would install into ~/.local on the root disk)
-export PIP_USER=0
+export PIP_USER=0 PYTHONNOUSERSITE=1          # and the env never sees ~/.local packages (stale nvidia-* there broke torch)
 $PIP install -q --upgrade pip
 if [ "$GEN" = ampere ]; then
   TORCH="torch==2.4.0 torchvision==0.19.0"; TIDX=https://download.pytorch.org/whl/cu121

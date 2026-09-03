@@ -20,7 +20,7 @@ export TRELLIS_DIR="${TRELLIS_DIR:-$ROOT/TRELLIS}"
 export REALESRGAN_WEIGHTS="${REALESRGAN_WEIGHTS:-$ROOT/weights/RealESRGAN_x4plus.pth}"
 # xformers everywhere (TRELLIS' sparse attention knows only xformers/flash_attn);
 # on Blackwell trellis_gen.py's blackwell_shim steers it to the CUTLASS kernels
-export ATTN_BACKEND="${ATTN_BACKEND:-xformers}" SPCONV_ALGO=native
+export ATTN_BACKEND="${ATTN_BACKEND:-xformers}" SPCONV_ALGO=native PYTHONNOUSERSITE=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"   # less fragmentation on small cards
 # the weights live in the install's own caches (see install_trellis.sh)
 export HF_HOME="${HF_HOME:-$ROOT/cache/hf}" TORCH_HOME="${TORCH_HOME:-$ROOT/cache/torch}"
