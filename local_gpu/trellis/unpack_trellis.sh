@@ -11,7 +11,7 @@ mkdir -p "$ROOT/env" "$ROOT/cache/hf" "$ROOT/cache/torch" "$ROOT/tmp"
 echo "--- extracting $(du -h "$ARC" | cut -f1) into $ROOT"
 tar -xf "$ARC" -C "$ROOT"
 tar -xzf "$ROOT/env.tar.gz" -C "$ROOT/env" && rm -f "$ROOT/env.tar.gz"
-"$ROOT/env/bin/conda-unpack"                      # rewrite the prefixes for this path
+"$ROOT/env/bin/python" "$ROOT/env/bin/conda-unpack"   # rewrite the prefixes for this path (its shebang wants a bare "python")
 echo "$ROOT" > "$HERE/ROOT"
 echo "--- weights (HuggingFace + torch hub), into $ROOT/cache"
 export HF_HOME="$ROOT/cache/hf" TORCH_HOME="$ROOT/cache/torch" XDG_CACHE_HOME="$ROOT/cache" TMPDIR="$ROOT/tmp" PYTHONNOUSERSITE=1
