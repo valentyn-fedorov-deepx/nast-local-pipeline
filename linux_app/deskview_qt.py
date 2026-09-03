@@ -247,8 +247,12 @@ class Deskview(QMainWindow):
         self.jobs_timer = QTimer(self); self.jobs_timer.timeout.connect(self.poll_jobs)
         self.jobs_timer.start(2500)
 
+        self._decode_overlay()
         self.load_folder()
         self.connect_api()
+        self.decode_timer = QTimer(self); self.decode_timer.timeout.connect(self.poll_decode)
+        self.decode_timer.start(1000)
+        self.poll_decode()
 
     # ------------------------------- chrome ---------------------------------------
     def _rail(self):
@@ -436,29 +440,17 @@ class Deskview(QMainWindow):
         self.frames["B"] = [n for n in names if n.startswith("B_")]
         self.lbl_frames.setText(f"FRAMES  A {len(self.frames['A'])}   B {len(self.frames['B'])}")
         self.lbl_dataset.setText(ROOT.name)
-        # variants: the recorder stream + every locked layer product
+        # variants = the locked catalog, always. Inputs are rgb/ + raw/ only:
+        # every product materializes on demand (layers/ is just the decode cache)
         self.cmb_variant.blockSignals(True)
         self.cmb_variant.clear()
-        names_map = {"nxyz": "Nxyz", "n_xy": "N xy", "n_xz": "N xz", "nxyz_phys": "phys",
-                     "nxyz_diffuse": "diffuse", "nxyz_specv2": "specv2", "edge": "Edge",
-                     "rgb_deglare": "RGB deglare"}
-        found = {}
-        if (ROOT / "nxyz").exists():
-            found["nxyz"] = "nxyz"
-        if (ROOT / "layers").exists():
-            for d in sorted((ROOT / "layers").iterdir()):
-                if d.is_dir():
-                    found[d.name] = f"layers/{d.name}"
-        for key in ("nxyz", "n_xy", "n_xz", "nxyz_phys", "nxyz_diffuse", "nxyz_specv2",
-                    "edge", "rgb_deglare"):
-            if key in found:
-                self.cmb_variant.addItem(names_map.get(key, key), found[key])
-        for key, d in found.items():
-            if key not in names_map:
-                self.cmb_variant.addItem(key, d)
+        for key, label in (("nxyz", "Nxyz"), ("n_xy", "N xy"), ("n_xz", "N xz"),
+                           ("nxyz_phys", "phys"), ("nxyz_diffuse", "diffuse"),
+                           ("nxyz_specv2", "specv2"), ("edge", "Edge"),
+                           ("rgb_deglare", "RGB deglare")):
+            self.cmb_variant.addItem(label, f"layers/{key}")
         self.cmb_variant.blockSignals(False)
-        if self.cmb_variant.count():
-            self.variant = self.cmb_variant.currentData()
+        self.variant = self.cmb_variant.currentData()
         self.render()
 
     def connect_api(self):
@@ -774,6 +766,57 @@ class Deskview(QMainWindow):
             os.startfile(str(ROOT))            # noqa
         else:
             subprocess.Popen(["xdg-open", str(ROOT)])
+
+    # -------------------------- raw-import decode gate -----------------------------
+    def _decode_overlay(self):
+        self.gate = QWidget(self)
+        self.gate.setStyleSheet(f"background: rgba(8,9,10,0.96);")
+        v = QVBoxLayout(self.gate); v.setAlignment(Qt.AlignCenter)
+        t = QLabel("Decoding raw frames"); t.setAlignment(Qt.AlignCenter)
+        t.setStyleSheet(f"color:{FG}; font-size:19px; font-weight:600;")
+        self.gate_sub = QLabel("preparing…"); self.gate_sub.setAlignment(Qt.AlignCenter)
+        self.gate_sub.setObjectName("mono")
+        self.gate_sub.setStyleSheet(f"color:{DIM}; font-size:12px;")
+        self.gate_bar = QFrame(); self.gate_bar.setFixedSize(420, 6)
+        self.gate_bar.setStyleSheet(f"background:{PANEL2}; border-radius:3px;")
+        self.gate_fill = QFrame(self.gate_bar); self.gate_fill.setGeometry(0, 0, 0, 6)
+        self.gate_fill.setStyleSheet(f"background:{ACCENT}; border-radius:3px;")
+        note = QLabel("RGB + raw in — the locked normals catalog is being decoded once,\n"
+                      "then everything is instant.")
+        note.setAlignment(Qt.AlignCenter); note.setStyleSheet(f"color:{FAINT}; font-size:11px;")
+        v.addWidget(t); v.addSpacing(6); v.addWidget(self.gate_sub); v.addSpacing(14)
+        v.addWidget(self.gate_bar, alignment=Qt.AlignCenter); v.addSpacing(16); v.addWidget(note)
+        self.gate.hide()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "gate"):
+            self.gate.setGeometry(self.rect())
+
+    def poll_decode(self):
+        try:
+            st = api_get("/api/decode_status", timeout=3)
+        except Exception:
+            return
+        if st["total"] == 0:                    # no raw import: nothing to gate on
+            self.gate.hide(); return
+        if st["complete"]:
+            if self.gate.isVisible():
+                self.gate.hide()
+                self.cache.clear(); self.cache_order.clear()
+                self.render()
+            return
+        # incomplete -> show the gate, and make sure the decode is running
+        self.gate.setGeometry(self.rect()); self.gate.show(); self.gate.raise_()
+        if not st["running"]:
+            try:
+                api_post("/api/decode", {}, timeout=5)
+            except Exception:
+                pass
+        pct = st["done"] / max(st["total"], 1)
+        self.gate_fill.setGeometry(0, 0, int(420 * pct), 6)
+        eta = f" · ~{st['eta'] // 60}m {st['eta'] % 60}s left" if st.get("eta") else ""
+        self.gate_sub.setText(f"{st['done']} / {st['total']} frames{eta}")
 
 
 def main():
