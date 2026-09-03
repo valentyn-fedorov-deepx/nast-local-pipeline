@@ -94,13 +94,15 @@ $PY -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" || {
 $PIP cache purge >/dev/null 2>&1; rm -rf "$ROOT/tmp"/*     # the torch wheels are installed: drop the 5 GB of downloads
 
 # nvcc for the extensions, EXACTLY torch's CUDA line (torch refuses to build
-# CUDA extensions with a different nvcc); minimal set: nvcc + cudart headers + cccl
+# CUDA extensions with a different nvcc)
 TV=$($PY -c "import torch; print(torch.version.cuda)")
 nv() { "$CONDA_PREFIX/bin/nvcc" --version 2>/dev/null | grep -oP "release \K[0-9]+\.[0-9]+"; }
 if [ "$(nv)" != "$TV" ]; then
   echo "--- nvcc $(nv) vs torch cuda $TV -> installing cuda $TV compilers"
   conda remove -y --override-channels -c nvidia -c conda-forge cuda-toolkit cuda-nvcc >/dev/null 2>&1
-  conda install -y --override-channels -c nvidia -c conda-forge "cuda-version=$TV" "cuda-nvcc=$TV.*"       "cuda-cudart-dev=$TV.*" "cuda-cccl=$TV.*" "cuda-nvrtc-dev=$TV.*" ||   conda install -y --override-channels -c "nvidia/label/cuda-$TV.0" -c conda-forge cuda-nvcc cuda-cudart-dev cuda-cccl || exit 1
+  # the full toolkit from the nvidia channel ONLY (conda-forge would pull a newer nvcc):
+  # the tex1-proven layout with every header torch's CUDA extensions include
+  conda install -y --override-channels -c nvidia "cuda-toolkit=$TV" ||   conda install -y --override-channels -c "nvidia/label/cuda-$TV.0" cuda-toolkit || exit 1
 fi
 [ "$(nv)" = "$TV" ] || { echo "nvcc $(nv) still != torch cuda $TV"; exit 1; }
 # host compiler for nvcc: conda's cuda-nvcc activation points CXX at the conda
