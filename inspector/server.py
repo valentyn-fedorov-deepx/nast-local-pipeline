@@ -35,6 +35,7 @@ DEGLARE_CROPS = os.environ.get("NAST_DEGLARE_CROPS", "1") != "0"
 # is rebuilt by the local VGGT-Omega runner (12-16 GB VRAM). NAST_LOCAL=0
 # restores the tex1 TRELLIS/Omega route when the GPU server is reachable.
 LOCAL_ONLY = os.environ.get("NAST_LOCAL", "1") != "0"
+TRELLIS_LOCAL = os.environ.get("NAST_TRELLIS", "1") != "0"   # 0 = never use the local TRELLIS env
 LOCAL_GPU = HERE.parent / "local_gpu"
 
 # ---- live normals decode (2026-09-03): ship rgb/ + raw/ only; every locked
@@ -1229,8 +1230,22 @@ def run_reconstruct(jid, obj):
             raise RuntimeError("no frame produced a crop")
 
         if LOCAL_ONLY:
-            upd("running", "3/6 local asset: map points inside the box")
-            build_point_asset(box, wd / "asset.ply")
+            # TRELLIS on this machine's GPU when local_gpu/trellis/install_trellis.sh
+            # has finished (its env_ok marker); otherwise the points-only asset
+            worker = LOCAL_GPU / "trellis" / "trellis_local.sh"
+            troot = Path(os.environ.get("NAST_TRELLIS_ROOT", str(Path.home() / "nast_trellis")))
+            if TRELLIS_LOCAL and crops and worker.exists() and (troot / "env_ok").exists():
+                with GPU_LOCK:
+                    upd("running", f"4/6 SAM + Real-ESRGAN + TRELLIS on the local GPU "
+                                   f"({len(crops)} views, ~3-5 min)")
+                    env2 = dict(os.environ); env2["NAST_TRELLIS_ROOT"] = str(troot)
+                    sh(["bash", str(worker), str(wd)], timeout=3600, env=env2)
+                if not (wd / "asset.ply").exists():
+                    raise RuntimeError("local TRELLIS produced no asset.ply — see the job log")
+            else:
+                upd("running", "3/6 local asset: map points inside the box "
+                               "(TRELLIS not installed: run local_gpu/trellis/install_trellis.sh)")
+                build_point_asset(box, wd / "asset.ply")
         else:
             with GPU_LOCK:
                 if prompt:
