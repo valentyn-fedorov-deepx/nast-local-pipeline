@@ -93,11 +93,16 @@ $PY -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_av
 $PY -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" || { echo "torch sees no GPU"; exit 1; }
 $PIP cache purge >/dev/null 2>&1; rm -rf "$ROOT/tmp"/*     # the torch wheels are installed: drop the 5 GB of downloads
 
-# nvcc for the extensions, exactly torch's CUDA line
-if ! "$CONDA_PREFIX/bin/nvcc" --version >/dev/null 2>&1; then
-  conda install -y --override-channels -c nvidia -c conda-forge "cuda-toolkit=$CUDA_TK" ||   conda install -y --override-channels -c "nvidia/label/cuda-$CUDA_TK.0" -c conda-forge cuda-toolkit || exit 1
+# nvcc for the extensions, EXACTLY torch's CUDA line (torch refuses to build
+# CUDA extensions with a different nvcc); minimal set: nvcc + cudart headers + cccl
+TV=$($PY -c "import torch; print(torch.version.cuda)")
+nv() { "$CONDA_PREFIX/bin/nvcc" --version 2>/dev/null | grep -oP "release \K[0-9]+\.[0-9]+"; }
+if [ "$(nv)" != "$TV" ]; then
+  echo "--- nvcc $(nv) vs torch cuda $TV -> installing cuda $TV compilers"
+  conda remove -y --override-channels -c nvidia -c conda-forge cuda-toolkit cuda-nvcc >/dev/null 2>&1
+  conda install -y --override-channels -c nvidia -c conda-forge "cuda-version=$TV" "cuda-nvcc=$TV.*"       "cuda-cudart-dev=$TV.*" "cuda-cccl=$TV.*" "cuda-nvrtc-dev=$TV.*" ||   conda install -y --override-channels -c "nvidia/label/cuda-$TV.0" -c conda-forge cuda-nvcc cuda-cudart-dev cuda-cccl || exit 1
 fi
-conda clean -a -y >/dev/null 2>&1                          # toolkit tarballs + extracted copies: ~4 GB of cache gone
+[ "$(nv)" = "$TV" ] || { echo "nvcc $(nv) still != torch cuda $TV"; exit 1; }
 export CUDA_HOME="$CONDA_PREFIX"
 export PATH="$CONDA_PREFIX/bin:$PATH"
 export TORCH_CUDA_ARCH_LIST="$ARCH"
