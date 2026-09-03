@@ -29,15 +29,16 @@ exec > >(tee -a "$ROOT/install.log") 2>&1
 echo "=== TRELLIS install $(date) root=$ROOT ==="
 
 # ---------------------------------------------------------------- conda
-for c in "$ROOT/miniconda3" "$HOME/miniconda3" "$HOME/anaconda3" /opt/conda; do
-  [ -f "$c/etc/profile.d/conda.sh" ] && source "$c/etc/profile.d/conda.sh" && break
-done
-if ! command -v conda >/dev/null 2>&1; then
+# a PRIVATE conda under $ROOT — never the user's own: that one usually lives
+# on the small root disk, and an 8 GB env there fills it (seen on the demo box)
+if [ ! -f "$ROOT/miniconda3/etc/profile.d/conda.sh" ]; then
   echo "--- installing miniconda into $ROOT/miniconda3"
-  curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o "$ROOT/miniconda.sh"
-  bash "$ROOT/miniconda.sh" -b -p "$ROOT/miniconda3"
-  source "$ROOT/miniconda3/etc/profile.d/conda.sh"
+  curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o "$ROOT/miniconda.sh" || exit 1
+  bash "$ROOT/miniconda.sh" -b -p "$ROOT/miniconda3" || exit 1
 fi
+source "$ROOT/miniconda3/etc/profile.d/conda.sh"
+: > "$ROOT/condarc"; export CONDARC="$ROOT/condarc"          # ignore ~/.condarc (envs_dirs etc.)
+export CONDA_ENVS_PATH="$ROOT/miniconda3/envs"
 conda --version || { echo "conda unavailable"; exit 1; }
 
 # ---------------------------------------------------------------- GPU generation

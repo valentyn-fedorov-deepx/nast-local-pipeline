@@ -10,9 +10,8 @@ ROOT="${NAST_TRELLIS_ROOT:-$( [ -f "$HERE/ROOT" ] && cat "$HERE/ROOT" || echo "$
 ENV_NAME="${NAST_TRELLIS_ENV:-trellis}"
 J="$1"
 [ -d "$J/crops" ] || { echo "no crops in $J"; exit 2; }
-for c in "$ROOT/miniconda3" "$HOME/miniconda3" "$HOME/anaconda3" /opt/conda; do
-  [ -f "$c/etc/profile.d/conda.sh" ] && source "$c/etc/profile.d/conda.sh" && break
-done
+[ -f "$ROOT/miniconda3/etc/profile.d/conda.sh" ] && source "$ROOT/miniconda3/etc/profile.d/conda.sh"
+export CONDARC="$ROOT/condarc" CONDA_ENVS_PATH="$ROOT/miniconda3/envs"
 command -v conda >/dev/null 2>&1 || { echo "conda not found (run install_trellis.sh)"; exit 2; }
 conda activate "$ENV_NAME"
 export TRELLIS_DIR="${TRELLIS_DIR:-$ROOT/TRELLIS}"
