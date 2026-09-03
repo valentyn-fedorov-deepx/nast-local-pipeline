@@ -132,13 +132,20 @@ ls "$TGT/include/cusparse.h" "$CONDA_PREFIX/include/cusparse.h" 2>/dev/null | he
 # conda's gcc is a cross-compiler and ignores LIBRARY_PATH, so also pass -L via LDFLAGS
 [ -e "$CONDA_PREFIX/lib64" ] || ln -s lib "$CONDA_PREFIX/lib64"
 for so in "$TGT"/lib/lib*.so.[0-9]*; do
-  [ -e "$so" ] || continue
+  [ -f "$so" ] || continue
   base=$(basename "$so"); name="${base%%.so.*}.so"
-  [ -e "$TGT/lib/$name" ] || ln -s "$base" "$TGT/lib/$name"
-  [ -e "$CONDA_PREFIX/lib/$name" ] || ln -s "../targets/x86_64-linux/lib/$name" "$CONDA_PREFIX/lib/$name"
+  [ -e "$TGT/lib/$name" ] || ln -sfn "$base" "$TGT/lib/$name"
+  [ -e "$CONDA_PREFIX/lib/$name" ] || ln -sfn "../targets/x86_64-linux/lib/$name" "$CONDA_PREFIX/lib/$name"
 done
+# libcudart.so must resolve to a REAL file (the 12.1 dev package ships a dangling
+# link); otherwise link against the runtime torch itself brought via pip
+if [ -z "$(readlink -e "$CONDA_PREFIX/lib/libcudart.so" 2>/dev/null)" ]; then
+  PIPRT=$($PY -c "import glob, nvidia.cuda_runtime as m; print((glob.glob(m.__path__[0] + '/lib/libcudart.so*') or [''])[0])" 2>/dev/null)
+  [ -n "$PIPRT" ] && ln -sfn "$PIPRT" "$CONDA_PREFIX/lib/libcudart.so" && ln -sfn "$PIPRT" "$CONDA_PREFIX/lib/libcudart.so.12"
+fi
 export LDFLAGS="${LDFLAGS:-} -L$TGT/lib -L$CONDA_PREFIX/lib"
-ls -la "$CONDA_PREFIX/lib/libcudart.so" 2>&1 | sed "s#$CONDA_PREFIX#\$ENV#"
+echo "libcudart.so -> $(readlink -e "$CONDA_PREFIX/lib/libcudart.so" || echo UNRESOLVED)"
+[ -n "$(readlink -e "$CONDA_PREFIX/lib/libcudart.so")" ] || { echo "no usable libcudart.so for the linker"; exit 1; }
 export TORCH_CUDA_ARCH_LIST="$ARCH"
 export MAX_JOBS="${MAX_JOBS:-$(nproc)}"
 nvcc --version | tail -1
