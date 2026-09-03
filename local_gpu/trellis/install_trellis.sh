@@ -25,6 +25,7 @@ cd "$ROOT"
 # every cache lives under $ROOT: the root disk of a demo laptop is often full
 export HF_HOME="$ROOT/cache/hf" TORCH_HOME="$ROOT/cache/torch" PIP_CACHE_DIR="$ROOT/cache/pip"
 export CONDA_PKGS_DIRS="$ROOT/cache/conda_pkgs" TMPDIR="$ROOT/tmp"
+export XDG_CACHE_HOME="$ROOT/cache" TRITON_CACHE_DIR="$ROOT/cache/triton"   # catch-all: nothing lands in ~/.cache
 exec > >(tee -a "$ROOT/install.log") 2>&1
 echo "=== TRELLIS install $(date) root=$ROOT ==="
 

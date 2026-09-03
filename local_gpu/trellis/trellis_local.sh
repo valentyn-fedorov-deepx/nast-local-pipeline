@@ -24,6 +24,7 @@ export ATTN_BACKEND="${ATTN_BACKEND:-$ATTN}" SPCONV_ALGO=native
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"   # less fragmentation on small cards
 # the weights live in the install's own caches (see install_trellis.sh)
 export HF_HOME="${HF_HOME:-$ROOT/cache/hf}" TORCH_HOME="${TORCH_HOME:-$ROOT/cache/torch}"
+export XDG_CACHE_HOME="$ROOT/cache" TRITON_CACHE_DIR="$ROOT/cache/triton"   # catch-all: nothing lands in ~/.cache
 python "$HERE/crop_enhance.py" "$J/crops" "$J/crops_enh"
 n=$(ls "$J"/crops_enh/*.png 2>/dev/null | wc -l)
 if [ "$n" -gt 0 ]; then
