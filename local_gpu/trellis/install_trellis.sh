@@ -117,6 +117,13 @@ export CC="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-cc" CXX="$CONDA_PREFIX/bin/x
 "$CXX" --version | head -1
 export CUDA_HOME="$CONDA_PREFIX"
 export PATH="$CONDA_PREFIX/bin:$PATH"
+# the nvidia conda packages keep headers/libs under targets/x86_64-linux — make
+# them visible to nvcc/g++ regardless of which symlinks the packages created
+TGT="$CONDA_PREFIX/targets/x86_64-linux"
+export CPATH="$TGT/include:$CONDA_PREFIX/include${CPATH:+:$CPATH}"
+export LIBRARY_PATH="$TGT/lib:$CONDA_PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$TGT/lib:$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+ls "$TGT/include/cusparse.h" "$CONDA_PREFIX/include/cusparse.h" 2>/dev/null | head -2
 export TORCH_CUDA_ARCH_LIST="$ARCH"
 export MAX_JOBS="${MAX_JOBS:-$(nproc)}"
 nvcc --version | tail -1
