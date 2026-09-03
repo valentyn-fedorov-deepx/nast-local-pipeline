@@ -37,6 +37,54 @@ DEGLARE_CROPS = os.environ.get("NAST_DEGLARE_CROPS", "1") != "0"
 LOCAL_ONLY = os.environ.get("NAST_LOCAL", "1") != "0"
 LOCAL_GPU = HERE.parent / "local_gpu"
 
+# ---- live normals decode (2026-09-03): ship rgb/ + raw/ only; every locked
+# polarization product is decoded ON DEMAND from the RAW12 frame the first
+# time a viewer asks for it, then written through into layers/ as a cache —
+# no offline layer pass, and reconstruction finds the files it samples.
+LIVE_PRODUCTS = ("nxyz", "n_xy", "n_xz", "nxyz_phys", "nxyz_diffuse",
+                 "nxyz_specv2", "edge", "rgb_deglare")
+_live_locks = {}
+_live_guard = threading.Lock()
+
+
+def live_decode(stem):
+    """decode every locked product for one frame from raw/, write into layers/"""
+    raw = VIDEO_DIR / "raw" / (stem + ".raw12")
+    if not raw.exists():
+        return False
+    with _live_guard:
+        lk = _live_locks.setdefault(stem, threading.Lock())
+    with lk:
+        probe = VIDEO_DIR / "layers" / LIVE_PRODUCTS[0] / (stem + ".jpg")
+        if probe.exists():
+            return True                        # another thread already did it
+        import cv2
+        import importlib
+        sys.path.insert(0, str(HERE.parent / "monocars"))
+        pn = importlib.import_module("polar_normals")
+        fr = pn.PolarFrame(raw.read_bytes())
+        P = pn.products(fr)
+        for k in LIVE_PRODUCTS:
+            if k not in P:
+                continue
+            d = VIDEO_DIR / "layers" / k
+            d.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(d / f"{stem}.jpg"), P[k], [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        return True
+
+
+def ensure_layer_frames(names):
+    """make sure the bake steps find every product for these frames"""
+    if not (VIDEO_DIR / "raw").exists():
+        return
+    for n in names:
+        stem = Path(n).stem
+        if not (VIDEO_DIR / "layers" / LIVE_PRODUCTS[0] / (stem + ".jpg")).exists():
+            try:
+                live_decode(stem)
+            except Exception as e:
+                print("live decode failed:", stem, e, flush=True)
+
 
 def build_point_asset(box, out_ply, cap=1_500_000, margin=1.25):
     """Local (no-TRELLIS) asset: dense-cloud points inside the solved box,
@@ -1155,6 +1203,11 @@ def run_reconstruct(jid, obj):
             f"--up={objply}.up.json"], timeout=600)
         (objscene / "index.html").write_bytes((VIEWER / "point_viewer.html").read_bytes())
         # gaussian-splat close-up (the photoreal one): asset kept as gaussians, upright + front
+        try:                                      # live world: decode the view frames first
+            ensure_layer_frames(box.get("obs_frames", []) +
+                                [rf.get("name") for rf in box.get("roi_frames", []) if rf.get("name")])
+        except Exception as e:
+            print("ensure layers skipped:", e, flush=True)
         try:
             sh([sys.executable, str(MONO / "asset2splat.py"), str(wd / "asset.ply"),
                 f"{objply}.up.json", str(objscene), "0.03", f"--crops={wd}"], timeout=600)
@@ -1229,6 +1282,21 @@ class H(BaseHTTPRequestHandler):
             return self._file(HERE / "static" / "app.html")
         if p.startswith("/static/"):
             return self._file(HERE / "static" / p[len("/static/"):])
+        if p.startswith("/frames/live/"):
+            # on-demand normals: layers/<variant>/<name>.jpg, decoded from raw/
+            rel = unquote(p[len("/frames/live/"):])
+            parts = rel.split("/", 1)
+            if len(parts) == 2:
+                variant, fname = parts
+                tgt = VIDEO_DIR / "layers" / variant / fname
+                if not tgt.exists():
+                    try:
+                        live_decode(Path(fname).stem.replace(".jpg", ""))
+                    except Exception as e:
+                        return self._send(500, {"error": f"live decode: {e}"})
+                if tgt.exists():
+                    return self._file(tgt)
+            return self._send(404, {"error": "no frame"})
         if p.startswith("/frames/"):
             return self._file(VIDEO_DIR / p[len("/frames/"):])
         if p.startswith("/cloud/"):

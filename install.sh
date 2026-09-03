@@ -14,6 +14,7 @@ PYBIN=$(command -v python3 || command -v python)
 "$PYBIN" -m venv venv
 venv/bin/pip install --upgrade pip
 venv/bin/pip install -r requirements.txt
+venv/bin/pip install PySide6
 
 if [ "${SKIP_TORCH:-0}" != "1" ]; then
   echo "== torch =="

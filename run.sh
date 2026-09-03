@@ -14,6 +14,10 @@ fi
 up || { echo "service did not start — see inspector/srv.err"; exit 1; }
 
 URL="http://localhost:8130/"
+# the desktop app (Qt port of the WPF Deskview); NAST_WEB=1 forces the browser GUI
+if [ "${NAST_WEB:-0}" != "1" ] && "$PY" -c "import PySide6" 2>/dev/null; then
+  exec "$PY" linux_app/deskview_qt.py
+fi
 for B in chromium chromium-browser google-chrome google-chrome-stable; do
   if command -v "$B" >/dev/null 2>&1; then
     exec "$B" --app="$URL" --window-size=1500,950
