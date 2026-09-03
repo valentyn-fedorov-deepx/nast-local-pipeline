@@ -104,9 +104,9 @@ hdr() { [ -f "$CONDA_PREFIX/include/cublas_v2.h" ] || [ -f "$CONDA_PREFIX/target
 if [ "$(nv)" != "$TV" ] || ! hdr; then          # wrong nvcc, or only a partial toolkit (no cublas/cusparse headers)
   echo "--- nvcc $(nv) vs torch cuda $TV (headers: $(hdr && echo ok || echo missing)) -> installing cuda-toolkit $TV"
   conda remove -y --override-channels -c nvidia -c conda-forge cuda-toolkit cuda-nvcc >/dev/null 2>&1
-  # the full toolkit from the nvidia channel ONLY (conda-forge would pull a newer nvcc):
-  # the tex1-proven layout with every header torch's CUDA extensions include
-  conda install -y --override-channels -c nvidia "cuda-toolkit=$TV" ||   conda install -y --override-channels -c "nvidia/label/cuda-$TV.0" cuda-toolkit || exit 1
+  # the full toolkit from nvidia's LABEL channel, which holds one CUDA version only
+  # (the main nvidia channel resolves "cuda-toolkit=12.1" to an nvcc 12.4)
+  conda install -y --override-channels -c "nvidia/label/cuda-$TV.1" cuda-toolkit ||   conda install -y --override-channels -c "nvidia/label/cuda-$TV.0" cuda-toolkit ||   conda install -y --override-channels -c nvidia "cuda-version=$TV" "cuda-toolkit=$TV" "cuda-nvcc=$TV.*" || exit 1
 fi
 [ "$(nv)" = "$TV" ] && hdr || { echo "nvcc $(nv) != torch cuda $TV, or toolkit headers missing"; exit 1; }
 # host compiler for nvcc: conda's cuda-nvcc activation points CXX at the conda
