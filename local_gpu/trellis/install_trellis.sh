@@ -103,6 +103,15 @@ if [ "$(nv)" != "$TV" ]; then
   conda install -y --override-channels -c nvidia -c conda-forge "cuda-version=$TV" "cuda-nvcc=$TV.*"       "cuda-cudart-dev=$TV.*" "cuda-cccl=$TV.*" "cuda-nvrtc-dev=$TV.*" ||   conda install -y --override-channels -c "nvidia/label/cuda-$TV.0" -c conda-forge cuda-nvcc cuda-cudart-dev cuda-cccl || exit 1
 fi
 [ "$(nv)" = "$TV" ] || { echo "nvcc $(nv) still != torch cuda $TV"; exit 1; }
+# host compiler for nvcc: conda's cuda-nvcc activation points CXX at the conda
+# toolchain (x86_64-conda-linux-gnu-c++), so provide it — gcc 11 is inside
+# nvcc 12.x's supported range, unlike the gcc 13 of newer Ubuntus
+if [ ! -x "$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++" ]; then
+  conda install -y --override-channels -c conda-forge "gcc_linux-64=11.*" "gxx_linux-64=11.*" || exit 1
+fi
+conda deactivate; conda activate "$ENV_NAME"     # re-run the activation hooks: CC/CXX/NVCC flags now consistent
+export CC="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-cc" CXX="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++"
+"$CXX" --version | head -1
 export CUDA_HOME="$CONDA_PREFIX"
 export PATH="$CONDA_PREFIX/bin:$PATH"
 export TORCH_CUDA_ARCH_LIST="$ARCH"
