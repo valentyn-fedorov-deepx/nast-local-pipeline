@@ -402,10 +402,46 @@ class Deskview(QMainWindow):
         self.cmb_scene.currentIndexChanged.connect(self._scene_changed)
         b = QPushButton("↻"); b.setFixedWidth(34); b.clicked.connect(self.load_scenes)
         bh.addWidget(eyebrow("scene")); bh.addSpacing(8)
-        bh.addWidget(self.cmb_scene); bh.addWidget(b); bh.addStretch(1)
+        bh.addWidget(self.cmb_scene); bh.addWidget(b)
+        bh.addSpacing(22); bh.addWidget(eyebrow("build map")); bh.addSpacing(6)
+        for cams in ("A", "B", "AB"):
+            mb = QPushButton(cams if cams != "AB" else "A + B")
+            mb.setToolTip(f"rebuild the street point cloud from camera {cams} (local VGGT, ~10 min/camera)")
+            mb.clicked.connect(lambda _, c=cams: self.build_map(c))
+            bh.addWidget(mb)
+        self.lbl_map = QLabel(""); self.lbl_map.setObjectName("mono")
+        self.lbl_map.setStyleSheet(f"color:{DIM}; font-size:11px;")
+        bh.addSpacing(14); bh.addWidget(self.lbl_map, 1)
         v.addWidget(bar)
         self.web_map = QWebEngineView(); v.addWidget(self.web_map, 1)
+        self.map_job = None
+        self.map_timer = QTimer(self); self.map_timer.timeout.connect(self.poll_map_job)
         return pane
+
+    def build_map(self, cams):
+        try:
+            r = api_post("/api/build_map", {"cams": cams}, timeout=30)
+            self.map_job = r.get("job_id")
+            self.lbl_map.setText(f"map {cams}: job #{self.map_job} queued")
+            self.map_timer.start(3000)
+        except Exception as ex:
+            self.lbl_map.setText(f"map build failed: {ex}")
+
+    def poll_map_job(self):
+        try:
+            jobs = api_get("/api/jobs", timeout=3)
+        except Exception:
+            return
+        j = next((x for x in jobs if x.get("id") == self.map_job), None)
+        if j is None:
+            return
+        st = j.get("status", ""); det = str(j.get("detail", ""))[:90]
+        self.lbl_map.setText(f"job #{j['id']} · {st.upper()} — {det}")
+        if st in ("done", "error"):
+            self.map_timer.stop()
+            if st == "done":
+                self.load_scenes()                      # fresh base map -> reload the viewer
+                self.lbl_map.setText(f"job #{j['id']} · DONE — map rebuilt, viewer reloaded")
 
     def _pane_3d(self):
         pane = QWidget(); h = QHBoxLayout(pane); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(0)
@@ -851,6 +887,8 @@ def main():
     win = Deskview()
     win.show()
     if "--selftest" in sys.argv:
+        tab = {"rec": 0, "map": 1, "3d": 2}.get(os.environ.get("NAST_SELFTEST_TAB", "rec"), 0)
+        win.switch_tab(tab)
         def snap():
             pix = win.grab()
             out = Path(sys.argv[sys.argv.index("--selftest") + 1]
