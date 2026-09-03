@@ -922,6 +922,20 @@ def run_map(jid, cams):
                     upd("running", f"{i + 1}/{total} Ω chunks, camera {cam} "
                                    f"(local GPU, chunk auto-fits 12-16 GB, ~20-30 min)")
                     env2 = dict(os.environ); env2["PACK_DIR"] = str(CLOUD_DIR)
+                    ck = LOCAL_GPU / "models" / "vggt_omega_1b_512.pt"
+                    if not ck.exists():
+                        raise RuntimeError("VGGT weights missing: local_gpu/models/vggt_omega_1b_512.pt "
+                                           "— extract nast_v2_gpu_extras.tar into the repo root")
+                    if not (VIDEO_DIR / "depth").exists():
+                        raise RuntimeError(f"{VIDEO_DIR.name}/depth missing (MoGe depth ships in "
+                                           "nast_v2_gpu_extras.tar)")
+                    chk = subprocess.run([sys.executable, "-c", "import torch,sys; "
+                                          "sys.exit(0 if torch.cuda.is_available() else 3)"],
+                                         capture_output=True, text=True)
+                    if chk.returncode != 0:
+                        raise RuntimeError("torch in venv has no CUDA — run install.sh on the GPU box "
+                                           "(needs nvidia-smi) or: venv/bin/pip install torch "
+                                           "--index-url https://download.pytorch.org/whl/cu128")
                     sh([sys.executable, str(LOCAL_GPU / "vggto_local.py"),
                         str(LOCAL_GPU / "models" / "vggt_omega_1b_512.pt"),
                         str(VIDEO_DIR / "rgb"), str(VIDEO_DIR / "depth"), f"{cam}_",
@@ -992,7 +1006,8 @@ GPU_LOCK = threading.Lock()                     # one remote GPU job at a time
 def sh(args, timeout=300, env=None):
     r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
     if r.returncode != 0:
-        raise RuntimeError(f"{args[0]} rc={r.returncode}: {(r.stderr or r.stdout)[-300:]}")
+        what = Path(args[1]).name if len(args) > 1 and str(args[1]).endswith(".py") else args[0]
+        raise RuntimeError(f"{what} rc={r.returncode}: {(r.stderr or r.stdout)[-600:]}")
     return r.stdout
 
 

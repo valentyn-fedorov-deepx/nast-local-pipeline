@@ -435,8 +435,9 @@ class Deskview(QMainWindow):
         j = next((x for x in jobs if x.get("id") == self.map_job), None)
         if j is None:
             return
-        st = j.get("status", ""); det = str(j.get("detail", ""))[:90]
-        self.lbl_map.setText(f"job #{j['id']} · {st.upper()} — {det}")
+        st = j.get("status", ""); det = str(j.get("detail", ""))
+        self.lbl_map.setText(f"job #{j['id']} · {st.upper()} — {det[:220]}")
+        self.lbl_map.setToolTip(det)
         if st in ("done", "error"):
             self.map_timer.stop()
             if st == "done":
