@@ -156,7 +156,8 @@ $PIP install wheel setuptools ninja pillow imageio imageio-ffmpeg tqdm easydict 
     pyvista pymeshfix igraph "transformers==4.46.3" safetensors huggingface_hub plyfile \
     timm realesrgan basicsr --extra-index-url https://pypi.org/simple || exit 1
 $PIP install $XF --index-url $TIDX --extra-index-url https://pypi.org/simple || exit 1
-$PIP install --force-reinstall --no-deps $KAO -f $KIDX || exit 1   # same version, different torch build
+$PIP install $KAO -f $KIDX || exit 1                                # kaolin + its deps (usd-core, warp-lang, ...)
+$PIP install --force-reinstall --no-deps $KAO -f $KIDX || exit 1   # and the wheel for THIS torch (same version number per torch)
 $PIP install $SPC || exit 1
 $PIP install git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8 || exit 1
 $PIP cache purge >/dev/null 2>&1
@@ -181,12 +182,16 @@ if ! ext_ok diff_gaussian_rasterization; then
   $PIP install --no-build-isolation "$ROOT/src/mip-splatting/submodules/diff-gaussian-rasterization" || exit 1
 fi
 
-# kaolin's wheel is built against ONE numpy major; flip until it imports
-if ! $PY -c "import kaolin" >/dev/null 2>&1; then
+# kaolin's wheel is built against ONE numpy major (0.17: numpy 1; utils3d drags
+# numpy 2 in) — pin the major that imports, and show the real error if neither does
+kao_ok() { $PY -c "import kaolin" >/dev/null 2>&1; }
+if ! kao_ok; then
   $PIP install "numpy==1.26.4" "opencv-python-headless==4.10.0.84"
-  $PY -c "import kaolin" >/dev/null 2>&1 || $PIP install "numpy>=2.0,<2.3"
+  kao_ok || $PIP install "numpy>=2.0,<2.3"
+  kao_ok || $PIP install "numpy==1.26.4"
 fi
-$PY -c "import kaolin; print('kaolin', kaolin.__version__)" || { echo "kaolin import broken"; exit 1; }
+$PY -c "import kaolin; print('kaolin', kaolin.__version__)" 2>&1 | tail -3
+kao_ok || { echo "kaolin import broken (see the traceback above)"; exit 1; }
 
 # self-healing import: any module the pins missed gets installed by name
 cd "$ROOT/TRELLIS"
