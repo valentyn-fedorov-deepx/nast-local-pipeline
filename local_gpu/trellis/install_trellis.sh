@@ -49,10 +49,16 @@ if [ "${CC%%.*}" -ge 10 ]; then GEN=blackwell; else GEN=ampere; fi
 echo "GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1) cc=$CC -> $GEN stack"
 
 # ---------------------------------------------------------------- env + torch
-if ! conda env list | grep -qE "^$ENV_NAME\s"; then
-  conda create -y -n "$ENV_NAME" python=3.10
+PY="$ROOT/miniconda3/envs/$ENV_NAME/bin/python"
+if [ ! -x "$PY" ]; then                       # absent or a half-made env from a killed run
+  conda env remove -n "$ENV_NAME" -y >/dev/null 2>&1; rm -rf "$ROOT/miniconda3/envs/$ENV_NAME"
+  conda create -y -n "$ENV_NAME" python=3.10 || exit 1
 fi
 conda activate "$ENV_NAME"
+[ -x "$PY" ] || { echo "env has no python: $PY"; exit 1; }
+PIP="$PY -m pip"                              # never the system pip (it would install into ~/.local on the root disk)
+export PIP_USER=0
+$PIP install -q --upgrade pip
 if [ "$GEN" = ampere ]; then
   TORCH="torch==2.4.0 torchvision==0.19.0"; TIDX=https://download.pytorch.org/whl/cu121
   CUDA_TK=12.1
@@ -70,9 +76,9 @@ else
 fi
 # --extra-index-url: with the torch index alone pip resolves EVERY dependency
 # there, and PyTorch prunes old nvidia-* wheels from it (cudnn 9.1.0.70 is gone)
-pip install $TORCH --index-url $TIDX --extra-index-url https://pypi.org/simple || exit 1
-python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())" || exit 1
-python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" || { echo "torch sees no GPU"; exit 1; }
+$PIP install $TORCH --index-url $TIDX --extra-index-url https://pypi.org/simple || exit 1
+$PY -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())" || exit 1
+$PY -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" || { echo "torch sees no GPU"; exit 1; }
 
 # nvcc for the extensions, exactly torch's CUDA line
 if ! "$CONDA_PREFIX/bin/nvcc" --version >/dev/null 2>&1; then
@@ -85,16 +91,16 @@ export MAX_JOBS="${MAX_JOBS:-$(nproc)}"
 nvcc --version | tail -1
 
 # ---------------------------------------------------------------- python deps
-pip install wheel setuptools ninja pillow imageio imageio-ffmpeg tqdm easydict \
+$PIP install wheel setuptools ninja pillow imageio imageio-ffmpeg tqdm easydict \
     "opencv-python-headless==4.10.0.84" scipy rembg onnxruntime trimesh open3d xatlas \
     pyvista pymeshfix igraph "transformers==4.46.3" safetensors huggingface_hub plyfile \
     timm realesrgan basicsr --extra-index-url https://pypi.org/simple || exit 1
-pip install $XF --index-url $TIDX --extra-index-url https://pypi.org/simple || exit 1
-pip install --force-reinstall --no-deps $KAO -f $KIDX || exit 1   # same version, different torch build
-pip install $SPC || exit 1
-pip install git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8 || exit 1
+$PIP install $XF --index-url $TIDX --extra-index-url https://pypi.org/simple || exit 1
+$PIP install --force-reinstall --no-deps $KAO -f $KIDX || exit 1   # same version, different torch build
+$PIP install $SPC || exit 1
+$PIP install git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8 || exit 1
 # basicsr 1.4.2 imports a torchvision module that was removed in 0.17 — one-line fix
-DEG=$(python -c "import importlib.util, os; print(os.path.join(os.path.dirname(importlib.util.find_spec('basicsr').origin), 'data', 'degradations.py'))")
+DEG=$($PY -c "import importlib.util, os; print(os.path.join(os.path.dirname(importlib.util.find_spec('basicsr').origin), 'data', 'degradations.py'))")
 [ -f "$DEG" ] && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEG"
 
 # ---------------------------------------------------------------- TRELLIS + extensions
@@ -102,40 +108,40 @@ if [ ! -d "$ROOT/TRELLIS/trellis" ]; then
   git clone --recurse-submodules https://github.com/microsoft/TRELLIS.git "$ROOT/TRELLIS" || exit 1
   (cd "$ROOT/TRELLIS" && git checkout -q 442aa1e && git submodule update --init --recursive)
 fi
-ext_ok() { python -c "import $1" >/dev/null 2>&1; }
-ext_ok nvdiffrast || pip install --no-build-isolation \
+ext_ok() { $PY -c "import $1" >/dev/null 2>&1; }
+ext_ok nvdiffrast || $PIP install --no-build-isolation \
     git+https://github.com/NVlabs/nvdiffrast.git@253ac4fcea7de5f396371124af597e6cc957bfae || exit 1
 if ! ext_ok diffoctreerast; then
   [ -d "$ROOT/src/diffoctreerast" ] || git clone --recursive https://github.com/JeffreyXiang/diffoctreerast.git "$ROOT/src/diffoctreerast"
-  pip install --no-build-isolation "$ROOT/src/diffoctreerast" || exit 1
+  $PIP install --no-build-isolation "$ROOT/src/diffoctreerast" || exit 1
 fi
 if ! ext_ok diff_gaussian_rasterization; then
   [ -d "$ROOT/src/mip-splatting" ] || git clone https://github.com/autonomousvision/mip-splatting.git "$ROOT/src/mip-splatting"
-  pip install --no-build-isolation "$ROOT/src/mip-splatting/submodules/diff-gaussian-rasterization" || exit 1
+  $PIP install --no-build-isolation "$ROOT/src/mip-splatting/submodules/diff-gaussian-rasterization" || exit 1
 fi
 
 # kaolin's wheel is built against ONE numpy major; flip until it imports
-if ! python -c "import kaolin" >/dev/null 2>&1; then
-  pip install "numpy==1.26.4" "opencv-python-headless==4.10.0.84"
-  python -c "import kaolin" >/dev/null 2>&1 || pip install "numpy>=2.0,<2.3"
+if ! $PY -c "import kaolin" >/dev/null 2>&1; then
+  $PIP install "numpy==1.26.4" "opencv-python-headless==4.10.0.84"
+  $PY -c "import kaolin" >/dev/null 2>&1 || $PIP install "numpy>=2.0,<2.3"
 fi
-python -c "import kaolin; print('kaolin', kaolin.__version__)" || { echo "kaolin import broken"; exit 1; }
+$PY -c "import kaolin; print('kaolin', kaolin.__version__)" || { echo "kaolin import broken"; exit 1; }
 
 # self-healing import: any module the pins missed gets installed by name
 cd "$ROOT/TRELLIS"
 ok=0
 for i in 1 2 3 4 5 6; do
-  out=$(ATTN_BACKEND=xformers SPCONV_ALGO=native python -c "import sys; sys.path.insert(0,'.'); from trellis.pipelines import TrellisImageTo3DPipeline; print('PIPELINE_IMPORT_OK')" 2>&1)
+  out=$(ATTN_BACKEND=xformers SPCONV_ALGO=native $PY -c "import sys; sys.path.insert(0,'.'); from trellis.pipelines import TrellisImageTo3DPipeline; print('PIPELINE_IMPORT_OK')" 2>&1)
   echo "$out" | tail -3
   if echo "$out" | grep -q PIPELINE_IMPORT_OK; then ok=1; break; fi
   mod=$(echo "$out" | grep -oP "No module named .\K[a-zA-Z0-9_]+" | head -1)
   [ -z "$mod" ] && break
-  pip install "$mod" || break
+  $PIP install "$mod" || break
 done
 [ $ok -eq 1 ] || { echo "TRELLIS import failed — see $ROOT/install.log"; exit 1; }
 
 # ---------------------------------------------------------------- weights
-python - <<'EOF' || exit 1
+$PY - <<'EOF' || exit 1
 from huggingface_hub import snapshot_download
 for r in ("microsoft/TRELLIS-image-large", "facebook/sam-vit-huge"):
     snapshot_download(r); print("weights ok:", r, flush=True)

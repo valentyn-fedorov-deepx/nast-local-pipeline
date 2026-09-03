@@ -14,6 +14,8 @@ J="$1"
 export CONDARC="$ROOT/condarc" CONDA_ENVS_PATH="$ROOT/miniconda3/envs"
 command -v conda >/dev/null 2>&1 || { echo "conda not found (run install_trellis.sh)"; exit 2; }
 conda activate "$ENV_NAME"
+PY="$ROOT/miniconda3/envs/$ENV_NAME/bin/python"
+[ -x "$PY" ] || { echo "no python in env $ENV_NAME under $ROOT (run install_trellis.sh)"; exit 2; }
 export TRELLIS_DIR="${TRELLIS_DIR:-$ROOT/TRELLIS}"
 export REALESRGAN_WEIGHTS="${REALESRGAN_WEIGHTS:-$ROOT/weights/RealESRGAN_x4plus.pth}"
 # xformers everywhere (TRELLIS' sparse attention knows only xformers/flash_attn);
@@ -23,12 +25,12 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 # the weights live in the install's own caches (see install_trellis.sh)
 export HF_HOME="${HF_HOME:-$ROOT/cache/hf}" TORCH_HOME="${TORCH_HOME:-$ROOT/cache/torch}"
 export XDG_CACHE_HOME="$ROOT/cache" TRITON_CACHE_DIR="$ROOT/cache/triton"   # catch-all: nothing lands in ~/.cache
-python "$HERE/crop_enhance.py" "$J/crops" "$J/crops_enh"
+"$PY" "$HERE/crop_enhance.py" "$J/crops" "$J/crops_enh"
 n=$(ls "$J"/crops_enh/*.png 2>/dev/null | wc -l)
 if [ "$n" -gt 0 ]; then
-  python "$HERE/trellis_gen.py" "$J/asset" "$J"/crops_enh/*.png
+  "$PY" "$HERE/trellis_gen.py" "$J/asset" "$J"/crops_enh/*.png
 else
   echo "ENHANCE_EMPTY: falling back to raw crops"
-  python "$HERE/trellis_gen.py" "$J/asset" "$J"/crops/*.png
+  "$PY" "$HERE/trellis_gen.py" "$J/asset" "$J"/crops/*.png
 fi
 echo "LOCAL_TRELLIS_DONE $J"
