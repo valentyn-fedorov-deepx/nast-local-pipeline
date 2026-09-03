@@ -27,6 +27,8 @@ export HF_HOME="$ROOT/cache/hf" TORCH_HOME="$ROOT/cache/torch" PIP_CACHE_DIR="$R
 export CONDA_PKGS_DIRS="$ROOT/cache/conda_pkgs" TMPDIR="$ROOT/tmp"
 export XDG_CACHE_HOME="$ROOT/cache" TRITON_CACHE_DIR="$ROOT/cache/triton"   # catch-all: nothing lands in ~/.cache
 export TORCH_EXTENSIONS_DIR="$ROOT/cache/torch_extensions"
+exec 9>"$ROOT/install.lock"                     # one installer at a time: two runs race on tmp/, symlinks, pip
+flock -n 9 || { echo "another install_trellis.sh is already running (lock $ROOT/install.lock) — wait for it"; exit 1; }
 exec > >(tee -a "$ROOT/install.log") 2>&1
 echo "=== TRELLIS install $(date) root=$ROOT ==="
 
