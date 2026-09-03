@@ -88,11 +88,13 @@ fi
 $PIP install $TORCH --index-url $TIDX --extra-index-url https://pypi.org/simple || exit 1
 $PY -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())" || exit 1
 $PY -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" || { echo "torch sees no GPU"; exit 1; }
+$PIP cache purge >/dev/null 2>&1; rm -rf "$ROOT/tmp"/*     # the torch wheels are installed: drop the 5 GB of downloads
 
 # nvcc for the extensions, exactly torch's CUDA line
 if ! "$CONDA_PREFIX/bin/nvcc" --version >/dev/null 2>&1; then
   conda install -y --override-channels -c nvidia -c conda-forge "cuda-toolkit=$CUDA_TK" ||   conda install -y --override-channels -c "nvidia/label/cuda-$CUDA_TK.0" -c conda-forge cuda-toolkit || exit 1
 fi
+conda clean -a -y >/dev/null 2>&1                          # toolkit tarballs + extracted copies: ~4 GB of cache gone
 export CUDA_HOME="$CONDA_PREFIX"
 export PATH="$CONDA_PREFIX/bin:$PATH"
 export TORCH_CUDA_ARCH_LIST="$ARCH"
@@ -108,6 +110,7 @@ $PIP install $XF --index-url $TIDX --extra-index-url https://pypi.org/simple || 
 $PIP install --force-reinstall --no-deps $KAO -f $KIDX || exit 1   # same version, different torch build
 $PIP install $SPC || exit 1
 $PIP install git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8 || exit 1
+$PIP cache purge >/dev/null 2>&1
 # basicsr 1.4.2 imports a torchvision module that was removed in 0.17 — one-line fix
 DEG=$($PY -c "import importlib.util, os; print(os.path.join(os.path.dirname(importlib.util.find_spec('basicsr').origin), 'data', 'degradations.py'))")
 [ -f "$DEG" ] && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEG"
