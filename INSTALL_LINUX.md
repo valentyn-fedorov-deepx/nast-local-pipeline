@@ -82,12 +82,38 @@ The GUI status bar must say "Backend online · N pts indexed".
   builds the working rgb) and open that folder in the app — the decode runs
   by itself. `monocars/decode_raw.py <scene>` is the same batch from a shell.
 
+## 5a. TRELLIS on this machine (full object quality)
+
+Without TRELLIS the local route meshes the map points inside the box — a
+one-sided crust. The generative objects (closed textured mesh + gaussians,
+as on tex1) need TRELLIS on the local GPU. One command, ~40–60 min, ~15 GB:
+
+```
+NAST_TRELLIS_ROOT=/big/disk/nast_trellis bash local_gpu/trellis/install_trellis.sh
+```
+
+It creates a conda env `trellis` (installs miniconda under the root when
+there is none), clones microsoft/TRELLIS, builds its CUDA extensions with a
+conda-provided nvcc (no system CUDA toolkit needed), downloads the weights
+(TRELLIS-image-large, SAM ViT-H, Real-ESRGAN x4, DINOv2) into its own caches,
+and ends with a real generation on a sample crop. Pins are chosen by the GPU:
+Ampere/Ada (RTX 30xx/40xx, A-series) → torch 2.4.0+cu121; Blackwell
+(RTX 50xx) → torch 2.7.0+cu128. Success writes `<root>/env_ok`; from then on
+stage 4/6 of every reconstruction runs SAM + Real-ESRGAN + TRELLIS locally
+(`local_gpu/trellis/trellis_local.sh`). 8 GB cards work: the models visit the
+GPU one stage at a time and the fusion drops to 3 views on out-of-memory.
+Set the same `NAST_TRELLIS_ROOT` before starting the service (`run.sh`), or
+leave the default `$HOME/nast_trellis`. `NAST_TRELLIS=0` forces the points
+route even when TRELLIS is installed.
+
 ## 6. Environment switches
 
 | var                     | default | meaning                                   |
 |-------------------------|---------|-------------------------------------------|
 | `NAST_LOCAL`            | 1       | 0 = use the remote tex1 TRELLIS/Omega route |
 | `NAST_DEGLARE_CROPS`    | 1       | 0 = reconstruction crops from rgb_orig    |
+| `NAST_TRELLIS`          | 1       | 0 = never use the local TRELLIS env       |
+| `NAST_TRELLIS_ROOT`     | ~/nast_trellis | where install_trellis.sh put the env + weights |
 
 Set them before starting the service, e.g. `NAST_LOCAL=0 ./run.sh`.
 

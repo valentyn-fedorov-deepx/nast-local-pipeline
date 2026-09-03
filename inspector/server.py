@@ -1233,7 +1233,10 @@ def run_reconstruct(jid, obj):
             # TRELLIS on this machine's GPU when local_gpu/trellis/install_trellis.sh
             # has finished (its env_ok marker); otherwise the points-only asset
             worker = LOCAL_GPU / "trellis" / "trellis_local.sh"
-            troot = Path(os.environ.get("NAST_TRELLIS_ROOT", str(Path.home() / "nast_trellis")))
+            root_file = LOCAL_GPU / "trellis" / "ROOT"          # written by install_trellis.sh
+            troot = Path(os.environ.get("NAST_TRELLIS_ROOT") or
+                         (root_file.read_text().strip() if root_file.exists() else "") or
+                         str(Path.home() / "nast_trellis"))
             if TRELLIS_LOCAL and crops and worker.exists() and (troot / "env_ok").exists():
                 with GPU_LOCK:
                     upd("running", f"4/6 SAM + Real-ESRGAN + TRELLIS on the local GPU "

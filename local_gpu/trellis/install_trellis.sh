@@ -20,8 +20,11 @@ set -o pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${NAST_TRELLIS_ROOT:-$HOME/nast_trellis}"
 ENV_NAME="${NAST_TRELLIS_ENV:-trellis}"
-mkdir -p "$ROOT/weights" "$ROOT/smoke"
+mkdir -p "$ROOT/weights" "$ROOT/smoke" "$ROOT/cache/hf" "$ROOT/cache/torch" "$ROOT/cache/pip" "$ROOT/cache/conda_pkgs" "$ROOT/tmp"
 cd "$ROOT"
+# every cache lives under $ROOT: the root disk of a demo laptop is often full
+export HF_HOME="$ROOT/cache/hf" TORCH_HOME="$ROOT/cache/torch" PIP_CACHE_DIR="$ROOT/cache/pip"
+export CONDA_PKGS_DIRS="$ROOT/cache/conda_pkgs" TMPDIR="$ROOT/tmp"
 exec > >(tee -a "$ROOT/install.log") 2>&1
 echo "=== TRELLIS install $(date) root=$ROOT ==="
 
@@ -89,7 +92,7 @@ pip install $KAO -f $KIDX || exit 1
 pip install $SPC || exit 1
 pip install git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8 || exit 1
 # basicsr 1.4.2 imports a torchvision module that was removed in 0.17 — one-line fix
-DEG=$(python -c "import basicsr, os; print(os.path.join(os.path.dirname(basicsr.__file__), 'data', 'degradations.py'))")
+DEG=$(python -c "import importlib.util, os; print(os.path.join(os.path.dirname(importlib.util.find_spec('basicsr').origin), 'data', 'degradations.py'))")
 [ -f "$DEG" ] && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEG"
 
 # ---------------------------------------------------------------- TRELLIS + extensions
@@ -149,4 +152,7 @@ cp "$HERE/sample_crop.png" "$ROOT/smoke/crops/roi_00.png"
 bash "$HERE/trellis_local.sh" "$ROOT/smoke" || { echo "smoke generation failed"; exit 1; }
 [ -s "$ROOT/smoke/asset.ply" ] || { echo "smoke produced no asset.ply"; exit 1; }
 echo "gen=$GEN env=$ENV_NAME date=$(date -Is)" > "$ROOT/env_ok"
+echo "$ROOT" > "$HERE/ROOT"                       # the service and the worker find the install here
+conda clean -a -y >/dev/null 2>&1; pip cache purge >/dev/null 2>&1; rm -rf "$ROOT/tmp"/* "$ROOT/miniconda.sh"
+du -sh "$ROOT" | sed 's/^/footprint: /'
 echo "TRELLIS_INSTALL_DONE ($GEN) -> $ROOT/env_ok"

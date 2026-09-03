@@ -6,7 +6,7 @@
 #        job_dir/asset.ply, asset_turn.mp4, asset_mesh.{ply,glb} + uv/tex, crops_enh/ out)
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="${NAST_TRELLIS_ROOT:-$HOME/nast_trellis}"
+ROOT="${NAST_TRELLIS_ROOT:-$( [ -f "$HERE/ROOT" ] && cat "$HERE/ROOT" || echo "$HOME/nast_trellis")}"
 ENV_NAME="${NAST_TRELLIS_ENV:-trellis}"
 J="$1"
 [ -d "$J/crops" ] || { echo "no crops in $J"; exit 2; }
@@ -17,7 +17,14 @@ command -v conda >/dev/null 2>&1 || { echo "conda not found (run install_trellis
 conda activate "$ENV_NAME"
 export TRELLIS_DIR="${TRELLIS_DIR:-$ROOT/TRELLIS}"
 export REALESRGAN_WEIGHTS="${REALESRGAN_WEIGHTS:-$ROOT/weights/RealESRGAN_x4plus.pth}"
-export ATTN_BACKEND=xformers SPCONV_ALGO=native
+# attention backend by GPU generation: xformers' wheels carry no sm_120 kernels,
+# so Blackwell (RTX 50xx) runs on PyTorch's own SDPA; everything older on xformers
+CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1)
+if [ -n "$CC" ] && [ "${CC%%.*}" -ge 10 ]; then ATTN=sdpa; else ATTN=xformers; fi
+export ATTN_BACKEND="${ATTN_BACKEND:-$ATTN}" SPCONV_ALGO=native
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"   # less fragmentation on small cards
+# the weights live in the install's own caches (see install_trellis.sh)
+export HF_HOME="${HF_HOME:-$ROOT/cache/hf}" TORCH_HOME="${TORCH_HOME:-$ROOT/cache/torch}"
 python "$HERE/crop_enhance.py" "$J/crops" "$J/crops_enh"
 n=$(ls "$J"/crops_enh/*.png 2>/dev/null | wc -l)
 if [ "$n" -gt 0 ]; then
