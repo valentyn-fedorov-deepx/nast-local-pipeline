@@ -97,14 +97,15 @@ $PIP cache purge >/dev/null 2>&1; rm -rf "$ROOT/tmp"/*     # the torch wheels ar
 # CUDA extensions with a different nvcc)
 TV=$($PY -c "import torch; print(torch.version.cuda)")
 nv() { "$CONDA_PREFIX/bin/nvcc" --version 2>/dev/null | grep -oP "release \K[0-9]+\.[0-9]+"; }
-if [ "$(nv)" != "$TV" ]; then
-  echo "--- nvcc $(nv) vs torch cuda $TV -> installing cuda $TV compilers"
+hdr() { [ -f "$CONDA_PREFIX/include/cublas_v2.h" ] || [ -f "$CONDA_PREFIX/targets/x86_64-linux/include/cublas_v2.h" ]; }
+if [ "$(nv)" != "$TV" ] || ! hdr; then          # wrong nvcc, or only a partial toolkit (no cublas/cusparse headers)
+  echo "--- nvcc $(nv) vs torch cuda $TV (headers: $(hdr && echo ok || echo missing)) -> installing cuda-toolkit $TV"
   conda remove -y --override-channels -c nvidia -c conda-forge cuda-toolkit cuda-nvcc >/dev/null 2>&1
   # the full toolkit from the nvidia channel ONLY (conda-forge would pull a newer nvcc):
   # the tex1-proven layout with every header torch's CUDA extensions include
   conda install -y --override-channels -c nvidia "cuda-toolkit=$TV" ||   conda install -y --override-channels -c "nvidia/label/cuda-$TV.0" cuda-toolkit || exit 1
 fi
-[ "$(nv)" = "$TV" ] || { echo "nvcc $(nv) still != torch cuda $TV"; exit 1; }
+[ "$(nv)" = "$TV" ] && hdr || { echo "nvcc $(nv) != torch cuda $TV, or toolkit headers missing"; exit 1; }
 # host compiler for nvcc: conda's cuda-nvcc activation points CXX at the conda
 # toolchain (x86_64-conda-linux-gnu-c++), so provide it — gcc 11 is inside
 # nvcc 12.x's supported range, unlike the gcc 13 of newer Ubuntus
