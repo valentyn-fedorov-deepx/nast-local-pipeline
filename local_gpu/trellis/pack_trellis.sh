@@ -22,6 +22,9 @@ for pat in libcublas libcublasLt libcusparse libcufft libcusolver libcurand libn
   EXCL="$EXCL --exclude targets/x86_64-linux/lib/${pat}*.so* --exclude lib/${pat}*.so*"
 done
 EXCL="$EXCL --exclude 'targets/x86_64-linux/lib/*_static.a' --exclude 'lib/*_static.a' --exclude 'targets/x86_64-linux/lib/stubs/*'"
+# profilers/debuggers/docs of the toolkit are dead weight at runtime (~1.7 GB)
+for d in nsight-compute nsightee_plugins libnvvp compute-sanitizer share/doc share/man; do EXCL="$EXCL --exclude '$d/*'"; done
+EXCL="$EXCL --exclude 'bin/cuda-gdb*' --exclude 'bin/nsys*' --exclude 'bin/ncu*' --exclude 'bin/nvvp'"
 eval "$ENV/bin/conda-pack" -p "$ENV" -o "$ROOT/pack/env.tar.gz" --ignore-missing-files --ignore-editable-packages $EXCL
 cp "$ROOT/env_ok" "$ROOT/pack/env_ok"
 tar -cf "$OUT" -C "$ROOT/pack" env.tar.gz env_ok -C "$ROOT" TRELLIS weights
