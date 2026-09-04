@@ -48,39 +48,70 @@ _live_locks = {}
 _live_guard = threading.Lock()
 
 
+def raw_dir(scene=None):
+    """where a scene's raw frames live: <scene>/raw/ or the scene folder itself
+    (the operator drops a folder of .raw12 files); None when there is no raw"""
+    scene = Path(scene) if scene else VIDEO_DIR
+    for d in (scene / "raw", scene):
+        if d.is_dir() and (next(d.glob("*.raw12"), None) or next(d.glob("*.raw"), None)):
+            return d
+    return None
+
+
+def raw_frames(scene=None):
+    d = raw_dir(scene)
+    return sorted(set(d.glob("*.raw12")) | set(d.glob("*.raw")), key=lambda q: q.name) if d else []
+
+
+def _frame_complete(stem):
+    return ((VIDEO_DIR / "rgb" / f"{stem}.jpg").exists() and
+            (VIDEO_DIR / "layers" / LIVE_PRODUCTS[0] / f"{stem}.jpg").exists())
+
+
 def live_decode(stem):
-    """decode every locked product for one frame from raw/, write into layers/"""
-    raw = VIDEO_DIR / "raw" / (stem + ".raw12")
-    if not raw.exists():
+    """decode one frame from raw: rgb/ + rgb_orig/ (when missing) and every
+    locked product into layers/ -- the on-demand twin of decode_raw.py"""
+    d = raw_dir()
+    raw = None
+    if d:
+        for ext in (".raw12", ".raw"):
+            if (d / (stem + ext)).exists():
+                raw = d / (stem + ext); break
+    if raw is None:
         return False
     with _live_guard:
         lk = _live_locks.setdefault(stem, threading.Lock())
     with lk:
-        probe = VIDEO_DIR / "layers" / LIVE_PRODUCTS[0] / (stem + ".jpg")
-        if probe.exists():
+        if _frame_complete(stem):
             return True                        # another thread already did it
         import cv2
         import importlib
         sys.path.insert(0, str(HERE.parent / "monocars"))
         pn = importlib.import_module("polar_normals")
         fr = pn.PolarFrame(raw.read_bytes())
+        for sub, fn in (("rgb", fr.color_work), ("rgb_orig", fr.color_recorder)):
+            out = VIDEO_DIR / sub / f"{stem}.jpg"
+            if not out.exists():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(out), fn(), [int(cv2.IMWRITE_JPEG_QUALITY), 92])
         P = pn.products(fr)
         for k in LIVE_PRODUCTS:
             if k not in P:
                 continue
-            d = VIDEO_DIR / "layers" / k
-            d.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(d / f"{stem}.jpg"), P[k], [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+            d2 = VIDEO_DIR / "layers" / k
+            d2.mkdir(parents=True, exist_ok=True)
+            if not (d2 / f"{stem}.jpg").exists():
+                cv2.imwrite(str(d2 / f"{stem}.jpg"), P[k], [int(cv2.IMWRITE_JPEG_QUALITY), 90])
         return True
 
 
 def ensure_layer_frames(names):
     """make sure the bake steps find every product for these frames"""
-    if not (VIDEO_DIR / "raw").exists():
+    if raw_dir() is None:
         return
     for n in names:
         stem = Path(n).stem
-        if not (VIDEO_DIR / "layers" / LIVE_PRODUCTS[0] / (stem + ".jpg")).exists():
+        if not _frame_complete(stem):
             try:
                 live_decode(stem)
             except Exception as e:
@@ -92,10 +123,16 @@ DECODE = {"running": False, "total": 0, "done": 0, "err": 0, "started": 0}
 
 
 def decode_counts():
-    total = len(list((VIDEO_DIR / "raw").glob("*.raw12"))) if (VIDEO_DIR / "raw").exists() else 0
+    """(raw frames, frames with rgb AND the catalog) -- rgb counts too now that
+    a raw-only folder is a valid input"""
+    total = len(raw_frames())
+    if not total:
+        return 0, 0
     nx = VIDEO_DIR / "layers" / LIVE_PRODUCTS[0]
-    done = len(list(nx.glob("*.jpg"))) if nx.exists() else 0
-    return total, done
+    have_nx = {q.stem for q in nx.glob("*.jpg")} if nx.exists() else set()
+    rgb = VIDEO_DIR / "rgb"
+    have_rgb = {q.stem for q in rgb.glob("*.jpg")} if rgb.exists() else set()
+    return total, len(have_nx & have_rgb)
 
 
 def run_decode():
@@ -123,7 +160,7 @@ def run_decode():
 
 def start_decode_if_needed():
     """kick the batch decode when raw/ exists but the catalog is incomplete"""
-    if DECODE["running"] or not (VIDEO_DIR / "raw").exists():
+    if DECODE["running"] or raw_dir() is None:
         return
     total, done = decode_counts()
     if total and done < total:
@@ -131,13 +168,16 @@ def start_decode_if_needed():
 
 
 def open_dataset(path):
-    """point the service at another scene folder (rgb/ + raw/ [+ rgb_orig, depth])
-    and start its decode when needed. The map/poses stay; frames, raw, layers,
+    """point the service at another scene folder and start its decode when
+    needed. Raw is enough: a folder of .raw12 files (or <scene>/raw/) yields
+    rgb/, rgb_orig/ and the normals catalog by itself; a folder that already
+    has rgb/ works as before. The map/poses stay; frames, raw, layers,
     reconstruction crops all follow the new folder."""
     global VIDEO_DIR, DEPTH_DIR
     p = Path(path).expanduser().resolve()
-    if not (p / "rgb").exists():
-        raise ValueError(f"no rgb/ inside {p}")
+    if raw_dir(p) is None and not (p / "rgb").exists():
+        raise ValueError(f"no .raw12 frames and no rgb/ inside {p}")
+    (p / "rgb").mkdir(exist_ok=True)
     VIDEO_DIR = p
     DEPTH_DIR = p / "depth"
     DECODE.update(running=False, done=0, err=0, started=0)
@@ -1386,7 +1426,8 @@ class H(BaseHTTPRequestHandler):
             parts = rel.split("/", 1)
             if len(parts) == 2:
                 variant, fname = parts
-                tgt = VIDEO_DIR / "layers" / variant / fname
+                tgt = (VIDEO_DIR / variant / fname) if variant in ("rgb", "rgb_orig") \
+                      else (VIDEO_DIR / "layers" / variant / fname)
                 if not tgt.exists():
                     try:
                         live_decode(Path(fname).stem.replace(".jpg", ""))

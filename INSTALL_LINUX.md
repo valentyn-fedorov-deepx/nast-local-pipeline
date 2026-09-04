@@ -42,10 +42,13 @@ the same place):
 | `nast_v2_core.tar`        | ~14 GB | code, base map, `street_video/{rgb,raw}`, the shipped objects, the objects db |
 | `nast_v2_gpu_extras.tar`  | ~6 GB  | VGGT weights, `street_video/{depth,rgb_orig}`, the `job_54` map scene — only for the local map rebuild and the rgb_orig comparison layer |
 
-Inputs of a scene are **`rgb/` + `raw/` only**. The locked normals catalog
-(`layers/`) is decoded on the machine: the service starts the batch decode
-the moment it sees `raw/` without a complete catalog (or when you open a
-folder in the app), and the app shows a progress gate until it is done.
+Input of a scene is **raw only**: a folder of `.raw12` frames (or
+`<scene>/raw/`). The service decodes everything else itself — `rgb/` (the
+recorder look with glare attenuation), `rgb_orig/` (the recorder look, plain)
+and the locked normals catalog (`layers/`) — the moment it sees raw frames
+without a complete set (or when you open a folder in the app), with a
+progress gate in the app until it is done. A folder that already carries
+a recorder-made `rgb/` keeps it untouched.
 
 ## 4. Run
 
@@ -65,9 +68,9 @@ The GUI status bar must say "Backend online · N pts indexed".
 
 ## 5. Using the pipeline
 
-* **Open data folder** (header button): pick any folder with `rgb/` + `raw/`
-  — the service switches to it, decodes it (progress gate), and the recorder
-  reloads from it. The map/poses stay.
+* **Open data folder** (header button): pick any folder of `.raw12` frames
+  — the service switches to it, decodes rgb + the normals catalog (progress
+  gate), and the recorder reloads from it. The map/poses stay.
 * **Objects**: recorder tab → draw an ROI → Reconstruct. Fully local
   (`NAST_LOCAL=1` is the default): box solve → point asset from the dense
   map → placement → splat + point close-ups → mesh (`mesh_from_points`
@@ -77,10 +80,10 @@ The GUI status bar must say "Backend online · N pts indexed".
 * **Map rebuild**: map tab → rebuild. Runs `local_gpu/vggto_local.py` per
   camera on the local GPU: chunks start at 24 frames @ 512 px and halve
   automatically on OOM (12 GB cards degrade gracefully). ~10 min/camera.
-* **New raw take**: put the frames as `<scene>/rgb/*.jpg` + `<scene>/raw/*.raw12`
-  (`monocars/extract_raw.py` pulls raw/ out of the rig tars, `gen_rgb_soft.py`
-  builds the working rgb) and open that folder in the app — the decode runs
-  by itself. `monocars/decode_raw.py <scene>` is the same batch from a shell.
+* **New raw take**: drop the `.raw12` frames into a folder (`monocars/extract_raw.py`
+  pulls them out of the rig tars) and open that folder in the app — rgb,
+  rgb_orig and the catalog are decoded by themselves. `monocars/decode_raw.py
+  <scene>` is the same batch from a shell.
 
 ## 5a. TRELLIS on this machine (full object quality)
 

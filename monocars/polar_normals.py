@@ -156,6 +156,22 @@ class PolarFrame:
         v = np.clip(bgr * scale, 0, 1) ** gamma
         return (v * 255).astype(np.uint8)
 
+    # the recorder's own rgb is a LINEAR per-channel scaling of S0/2 (gamma 1.00,
+    # no auto white balance), fitted on 40 frames of the 07.08 dataset against
+    # the recorder's jpgs: mean |error| ~1/255. BGR, for sub in 16-bit units.
+    RECORDER_K = np.array([0.00642983, 0.00393173, 0.00679093], np.float32)
+
+    def color_recorder(self):
+        """S0 colour exactly as the recorder writes rgb_orig (linear, fixed WB)"""
+        ref = (self.sub[0] + self.sub[90]) * 0.5
+        return np.clip(ref * self.RECORDER_K, 0, 255).astype(np.uint8)
+
+    def color_work(self):
+        """the working colour stream: recorder look x glare attenuation --
+        the same construction as the shipped street_video/rgb (gen_rgb_soft)"""
+        att = self.deglare_atten()
+        return np.clip(self.color_recorder().astype(np.float32) * att[..., None], 0, 255).astype(np.uint8)
+
     def deglare(self):
         """unpolarized intensity I_min = (s0/2)(1-dolp): specular glare removed
         (windshields, wet road) -- the polarization 'see-through' product"""

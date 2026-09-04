@@ -1,9 +1,12 @@
-"""Batch-decode a scene's RAW12 frames into the locked normals catalog.
+"""Batch-decode a scene's RAW12 frames into everything the viewer needs.
 
-This is the up-front decode step: point it at a scene that has rgb/ + raw/
-and it fills layers/<product>/ for every frame, in parallel. Resumable —
-frames already decoded are skipped, so it doubles as the "finish the rest"
-pass. The GUI runs this right after raw import and shows its progress.
+Input is raw ONLY: either <scene>/raw/*.raw12 or a folder holding the .raw12
+files directly. Per frame it writes rgb/<stem>.jpg (the working colour
+stream: the recorder look x glare attenuation), rgb_orig/<stem>.jpg (plain S0)
+and layers/<product>/<stem>.jpg for the locked normals catalog. Resumable:
+frames that already have every output are skipped (existing rgb/ from a
+recorder is kept as is), so it doubles as the "finish the rest" pass. The
+GUI runs this right after a raw import and shows its progress.
 
 Usage: python decode_raw.py <scene_dir> [workers=6]
 """
@@ -18,32 +21,50 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 SCENE = Path(sys.argv[1])
 WORKERS = int(sys.argv[2]) if len(sys.argv) > 2 else 6
-RAW = SCENE / "raw"
+RAW = SCENE / "raw" if (SCENE / "raw").is_dir() else SCENE
 PRODUCTS = ("nxyz", "n_xy", "n_xz", "nxyz_phys", "nxyz_diffuse",
             "nxyz_specv2", "edge", "rgb_deglare")
+JPG = [int(cv2.IMWRITE_JPEG_QUALITY), 92]
 
 
-def work(stem):
+def raw_files():
+    return sorted(set(RAW.glob("*.raw12")) | set(RAW.glob("*.raw")), key=lambda q: q.name)
+
+
+def complete(stem):
+    return ((SCENE / "rgb" / f"{stem}.jpg").exists() and (SCENE / "rgb_orig" / f"{stem}.jpg").exists()
+            and all((SCENE / "layers" / k / f"{stem}.jpg").exists() for k in PRODUCTS))
+
+
+def work(path):
+    stem = Path(path).stem
     try:
         from polar_normals import PolarFrame, products
-        if all((SCENE / "layers" / k / f"{stem}.jpg").exists() for k in PRODUCTS):
+        if complete(stem):
             return stem, None
-        fr = PolarFrame((RAW / f"{stem}.raw12").read_bytes())
+        fr = PolarFrame(Path(path).read_bytes())
+        # colour first: rgb = working stream (soft deglare), rgb_orig = plain S0.
+        # a recorder-made rgb/rgb_orig (the shipped dataset) is never overwritten
+        for sub, fn in (("rgb", fr.color_work), ("rgb_orig", fr.color_recorder)):
+            out = SCENE / sub / f"{stem}.jpg"
+            if not out.exists():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(out), fn(), JPG)
         P = products(fr)
         for k in PRODUCTS:
             d = SCENE / "layers" / k
             d.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(d / f"{stem}.jpg"), P[k], [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+            if not (d / f"{stem}.jpg").exists():
+                cv2.imwrite(str(d / f"{stem}.jpg"), P[k], [int(cv2.IMWRITE_JPEG_QUALITY), 90])
         return stem, None
     except Exception as e:
         return stem, repr(e)
 
 
 if __name__ == "__main__":
-    stems = sorted(p.stem for p in RAW.glob("*.raw12"))
-    todo = [s for s in stems
-            if not all((SCENE / "layers" / k / f"{s}.jpg").exists() for k in PRODUCTS)]
-    print(f"DECODE_START total={len(stems)} todo={len(todo)} workers={WORKERS}", flush=True)
+    files = raw_files()
+    todo = [str(q) for q in files if not complete(q.stem)]
+    print(f"DECODE_START total={len(files)} todo={len(todo)} workers={WORKERS} raw={RAW}", flush=True)
     t0 = time.time(); ok = 0; err = 0
     with Pool(WORKERS) as pool:
         for i, (stem, e) in enumerate(pool.imap_unordered(work, todo, chunksize=2), 1):

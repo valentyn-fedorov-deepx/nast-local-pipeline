@@ -530,13 +530,12 @@ class Deskview(QMainWindow):
         else:
             # live decode: the service renders the product from raw/ on demand
             variant = layer[7:] if layer.startswith("layers/") else layer
-            if variant != "rgb":
-                try:
-                    with urllib.request.urlopen(f"{API}/frames/live/{variant}/{name}",
-                                                timeout=30) as r:
-                        img = QImage.fromData(r.read())
-                except Exception:
-                    img = None
+            try:
+                with urllib.request.urlopen(f"{API}/frames/live/{variant}/{name}",
+                                            timeout=30) as r:
+                    img = QImage.fromData(r.read())
+            except Exception:
+                img = None
         if img is None or img.isNull():
             return None
         pix = QPixmap.fromImage(img).transformed(QTransform().rotate(90))
@@ -800,10 +799,10 @@ class Deskview(QMainWindow):
         self.lbl_render.setText(f"{title} · job #{jid}")
 
     def open_folder(self):
-        """pick a scene folder (rgb/ + raw/): the service switches to it and
-        starts the decode; the recorder reloads from it"""
+        """pick a scene folder -- a folder of .raw12 frames is enough: the service
+        switches to it, decodes rgb + the normals catalog, the recorder reloads"""
         global ROOT
-        d = QFileDialog.getExistingDirectory(self, "Open data folder (rgb + raw)", str(ROOT.parent))
+        d = QFileDialog.getExistingDirectory(self, "Open data folder (raw frames)", str(ROOT.parent))
         if not d:
             return
         try:
@@ -844,7 +843,7 @@ class Deskview(QMainWindow):
         self.gate_bar.setStyleSheet(f"background:{PANEL2}; border-radius:3px;")
         self.gate_fill = QFrame(self.gate_bar); self.gate_fill.setGeometry(0, 0, 0, 6)
         self.gate_fill.setStyleSheet(f"background:{ACCENT}; border-radius:3px;")
-        note = QLabel("RGB + raw in — the locked normals catalog is being decoded once,\n"
+        note = QLabel("Raw in — RGB and the locked normals catalog are decoded once,\n"
                       "then everything is instant.")
         note.setAlignment(Qt.AlignCenter); note.setStyleSheet(f"color:{FAINT}; font-size:11px;")
         v.addWidget(t); v.addSpacing(6); v.addWidget(self.gate_sub); v.addSpacing(14)
@@ -867,7 +866,7 @@ class Deskview(QMainWindow):
             if self.gate.isVisible():
                 self.gate.hide()
                 self.cache.clear(); self.cache_order.clear()
-                self.render()
+                self.load_folder()              # rgb/ was written by the decode: reread the frame list
             return
         # incomplete -> show the gate, and make sure the decode is running
         self.gate.setGeometry(self.rect()); self.gate.show(); self.gate.raise_()
