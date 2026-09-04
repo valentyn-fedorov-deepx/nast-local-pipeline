@@ -48,7 +48,11 @@ recorder look with glare attenuation), `rgb_orig/` (the recorder look, plain)
 and the locked normals catalog (`layers/`) — the moment it sees raw frames
 without a complete set (or when you open a folder in the app), with a
 progress gate in the app until it is done. A folder that already carries
-a recorder-made `rgb/` keeps it untouched.
+a recorder-made `rgb/` keeps it untouched. Phase 2 follows in the background:
+MoGe-2 metric depth for every frame (`depth/`, u16 mm; `monocars/moge_depth.py`
+run with the TRELLIS env's python — `local_gpu/trellis/add_moge.sh` puts MoGe
+there, `unpack_trellis.sh`/`install_trellis.sh` call it) — the header shows
+`depth N / M` while it runs; ROI solves and the map rebuild use it once done.
 
 ## 4. Run
 

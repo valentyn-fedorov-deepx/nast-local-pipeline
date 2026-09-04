@@ -8,6 +8,7 @@ Run:  python server.py [port]      then open http://localhost:8130/
 Deps: stdlib + numpy (+ scipy optional). No web framework, so it just runs.
 """
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -119,7 +120,84 @@ def ensure_layer_frames(names):
 
 
 # ---- up-front batch decode (raw import -> locked catalog, with progress) ----------
-DECODE = {"running": False, "total": 0, "done": 0, "err": 0, "started": 0}
+DECODE = {"running": False, "total": 0, "done": 0, "err": 0, "started": 0,
+          "phase": "", "depth_total": 0, "depth_done": 0}
+_MOGE_PY = {}
+
+
+def trellis_root():
+    """where install/unpack_trellis.sh put the TRELLIS env (ROOT file next to the worker)"""
+    root_file = LOCAL_GPU / "trellis" / "ROOT"
+    return Path(os.environ.get("NAST_TRELLIS_ROOT") or
+                (root_file.read_text().strip() if root_file.exists() else "") or
+                str(Path.home() / "nast_trellis"))
+
+
+def moge_python():
+    """an interpreter that imports MoGe-2: the TRELLIS env (add_moge.sh) first,
+    then this service's own python; None -> no local depth"""
+    if "py" in _MOGE_PY:
+        return _MOGE_PY["py"]
+    troot = trellis_root()
+    cands = [troot / "env" / "bin" / "python", troot / "miniconda3" / "envs" / "trellis" / "bin" / "python",
+             Path(sys.executable)]
+    found = None
+    for c in cands:
+        if c.exists() and subprocess.run([str(c), "-c", "import moge.model.v2"], capture_output=True,
+                                         env=_moge_env(c)).returncode == 0:
+            found = c; break
+    _MOGE_PY["py"] = found
+    print("moge python:", found, flush=True)
+    return found
+
+
+def _moge_env(py):
+    """caches of the TRELLIS install when its python runs MoGe (weights land on the big disk)"""
+    env = dict(os.environ); env["PYTHONNOUSERSITE"] = "1"
+    troot = trellis_root()
+    if str(py).startswith(str(troot)):
+        env.update(HF_HOME=str(troot / "cache" / "hf"), TORCH_HOME=str(troot / "cache" / "torch"),
+                   XDG_CACHE_HOME=str(troot / "cache"), TMPDIR=str(troot / "tmp"))
+    return env
+
+
+def depth_counts():
+    """(frames, frames with a depth map) for the current scene"""
+    src = VIDEO_DIR / "rgb_orig" if (VIDEO_DIR / "rgb_orig").is_dir() else VIDEO_DIR / "rgb"
+    stems = {q.stem for q in src.glob("*.jpg")} if src.exists() else set()
+    if not stems:
+        return 0, 0
+    have = {q.stem for q in (VIDEO_DIR / "depth").glob("*.png")} if (VIDEO_DIR / "depth").exists() else set()
+    return len(stems), len(stems & have)
+
+
+def scene_fov_x():
+    try:
+        I = STATE["meta"]["intrinsics"]
+        return f"{math.degrees(2 * math.atan(I['w'] / (2 * I['fx']))):.3f}"
+    except Exception:
+        return "auto"
+
+
+def run_depth():
+    """phase 2: MoGe-2 depth for every frame lacking one (metric mm PNGs)"""
+    py = moge_python()
+    if py is None:
+        return
+    total, done = depth_counts()
+    DECODE.update(phase="depth", depth_total=total, depth_done=done)
+    proc = subprocess.Popen([str(py), "-u", str(MONO / "moge_depth.py"), str(VIDEO_DIR), scene_fov_x()],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=_moge_env(py))
+    for line in proc.stdout:
+        line = line.strip()
+        if line.startswith("DEPTH_PROGRESS") or line.startswith("DEPTH_DONE"):
+            DECODE["depth_done"] = depth_counts()[1]
+        elif line.startswith("ERR"):
+            DECODE["err"] += 1
+        elif line.startswith("Traceback") or "Error" in line[:40]:
+            print("moge:", line, flush=True)
+    proc.wait()
+    DECODE["depth_done"] = depth_counts()[1]
 
 
 def decode_counts():
@@ -136,34 +214,45 @@ def decode_counts():
 
 
 def run_decode():
+    """phase 1: raw -> rgb/rgb_orig/layers (decode_raw.py); phase 2: depth (MoGe)"""
     try:
-        total, _ = decode_counts()
-        DECODE.update(running=True, total=total, err=0, started=time.time())
-        proc = subprocess.Popen([sys.executable, "-u", str(MONO / "decode_raw.py"),
-                                 str(VIDEO_DIR), "6"],
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        for line in proc.stdout:
-            line = line.strip()
-            if line.startswith("DECODE_PROGRESS") or line.startswith("DECODE_DONE"):
-                _, done = decode_counts()
-                DECODE["done"] = done
-            if line.startswith("ERR"):
-                DECODE["err"] += 1
-        proc.wait()
-        _, done = decode_counts()
-        DECODE["done"] = done
+        total, done = decode_counts()
+        DECODE.update(running=True, total=total, done=done, err=0, started=time.time(), phase="raw")
+        if total and done < total:
+            proc = subprocess.Popen([sys.executable, "-u", str(MONO / "decode_raw.py"),
+                                     str(VIDEO_DIR), "6"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in proc.stdout:
+                line = line.strip()
+                if line.startswith("DECODE_PROGRESS") or line.startswith("DECODE_DONE"):
+                    _, done = decode_counts()
+                    DECODE["done"] = done
+                if line.startswith("ERR"):
+                    DECODE["err"] += 1
+            proc.wait()
+            _, done = decode_counts()
+            DECODE["done"] = done
+        dt, dd = depth_counts()
+        if dt and dd < dt:
+            run_depth()
     except Exception as e:
         print("decode run failed:", e, flush=True)
     finally:
         DECODE["running"] = False
+        DECODE["phase"] = ""
+
+
+def depth_pending():
+    dt, dd = depth_counts()
+    return bool(dt) and dd < dt and moge_python() is not None
 
 
 def start_decode_if_needed():
     """kick the batch decode when raw/ exists but the catalog is incomplete"""
-    if DECODE["running"] or raw_dir() is None:
+    if DECODE["running"]:
         return
     total, done = decode_counts()
-    if total and done < total:
+    if (raw_dir() is not None and total and done < total) or depth_pending():
         threading.Thread(target=run_decode, daemon=True).start()
 
 
@@ -1499,19 +1588,26 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, rows)
         if p == "/api/dataset":
             total, done = decode_counts()
+            dt, dd = depth_counts()
             return self._send(200, {"path": str(VIDEO_DIR), "raw": total, "decoded": done,
+                                    "depth": dd, "depth_total": dt,
                                     "frames": len(list((VIDEO_DIR / "rgb").glob("*.jpg")))
                                     if (VIDEO_DIR / "rgb").exists() else 0})
         if p == "/api/decode_status":
             total, done = decode_counts()
             DECODE["done"] = done; DECODE["total"] = total
+            dt, dd = depth_counts()
             eta = 0
-            if DECODE["running"] and done and DECODE["started"]:
+            if DECODE["running"] and DECODE["phase"] == "raw" and done and DECODE["started"]:
                 rate = (time.time() - DECODE["started"]) / max(done, 1)
                 eta = int(rate * (total - done))
+            raw_ok = total > 0 and done >= total
+            depth_ok = (not dt) or dd >= dt or moge_python() is None
             return self._send(200, {"running": DECODE["running"], "total": total,
                                     "done": done, "err": DECODE["err"],
-                                    "complete": total > 0 and done >= total, "eta": eta})
+                                    "phase": DECODE["phase"], "raw_complete": raw_ok,
+                                    "depth_total": dt, "depth_done": dd, "depth_complete": depth_ok,
+                                    "complete": raw_ok and depth_ok, "eta": eta})
         return self._send(404, {"error": "no route"})
 
     def _body(self):

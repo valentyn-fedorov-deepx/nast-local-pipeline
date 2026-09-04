@@ -860,13 +860,18 @@ class Deskview(QMainWindow):
             st = api_get("/api/decode_status", timeout=3)
         except Exception:
             return
-        if st["total"] == 0:                    # no raw import: nothing to gate on
-            self.gate.hide(); return
-        if st["complete"]:
+        depth_note = ""
+        if st.get("depth_total") and not st.get("depth_complete", True):
+            depth_note = f"   ·   depth {st.get('depth_done', 0)} / {st['depth_total']}"
+        if st["total"] == 0 or st.get("raw_complete", st["complete"]):
+            # frames exist (raw decoded, or a ready dataset): no gate -- the depth
+            # phase (MoGe, phase 2) runs in the background and only annotates the header
             if self.gate.isVisible():
                 self.gate.hide()
                 self.cache.clear(); self.cache_order.clear()
                 self.load_folder()              # rgb/ was written by the decode: reread the frame list
+            base = self.lbl_frames.text().split("   ·   depth")[0]
+            self.lbl_frames.setText(base + depth_note)
             return
         # incomplete -> show the gate, and make sure the decode is running
         self.gate.setGeometry(self.rect()); self.gate.show(); self.gate.raise_()

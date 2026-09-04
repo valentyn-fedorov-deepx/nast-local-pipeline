@@ -205,6 +205,7 @@ for i in 1 2 3 4 5 6; do
   $PIP install "$mod" || break
 done
 [ $ok -eq 1 ] || { echo "TRELLIS import failed — see $ROOT/install.log"; exit 1; }
+NAST_TRELLIS_ROOT="$ROOT" NAST_TRELLIS_ENV="$ENV_NAME" bash "$HERE/add_moge.sh" || exit 1   # MoGe-2 for raw imports
 
 # ---------------------------------------------------------------- weights
 $PY - <<'EOF' || exit 1

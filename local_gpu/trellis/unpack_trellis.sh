@@ -13,6 +13,8 @@ tar -xf "$ARC" -C "$ROOT"
 tar -xzf "$ROOT/env.tar.gz" -C "$ROOT/env" && rm -f "$ROOT/env.tar.gz"
 "$ROOT/env/bin/python" "$ROOT/env/bin/conda-unpack"   # rewrite the prefixes for this path (its shebang wants a bare "python")
 echo "$ROOT" > "$HERE/ROOT"
+echo "--- MoGe-2 (metric depth for raw imports) into the env"
+NAST_TRELLIS_ROOT="$ROOT" bash "$HERE/add_moge.sh"
 echo "--- weights (HuggingFace + torch hub), into $ROOT/cache"
 export HF_HOME="$ROOT/cache/hf" TORCH_HOME="$ROOT/cache/torch" XDG_CACHE_HOME="$ROOT/cache" TMPDIR="$ROOT/tmp" PYTHONNOUSERSITE=1
 "$ROOT/env/bin/python" - <<'PY'
