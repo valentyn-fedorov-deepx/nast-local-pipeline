@@ -84,26 +84,56 @@ solve, the object views and the map build all need a pose per frame. The route:
 
 1. **Open data folder**: the folder with the `.raw12` frames. Decode (rgb, rgb_orig,
    the normals catalog) and the MoGe-2 depth pass start by themselves.
-2. MAP tab, **poses**: `local_gpu/vggto_poses.py` on the local GPU, about one minute
-   per 300 frames. VGGT-Omega cameras on overlapping chunks are chained into one
-   track; the scale of every chunk comes from triangulated SIFT matches against the
-   MoGe depth (the depth maps of VGGT are not scale-consistent with its cameras, so
-   they are not used); neighbouring chunks share camera centres, which ties the
-   scales together; the world "up" is the camera axis that points at the sky; the
-   second camera of the rig follows the first one by the shared trajectory, piece by
-   piece when the recording has holes in time. `build map` runs this step by itself
-   when the recording has no poses.
-3. **build map** and objects as before.
+2. MAP tab, **poses**: `local_gpu/vggto_poses.py` on the local GPU, about 25 s per
+   100 frames. It makes the camera poses AND the depth the rest of the pipeline
+   unprojects (`<recording>/depth_geo/`, same 16-bit format as the MoGe dump, with
+   `depth_geo_conf/`). `build map` runs this step by itself when the recording has
+   no poses.
+3. **build map** and objects as before. For such a recording the map is its
+   `depth_geo` unprojected with its poses (`monocars/geo_layer.py`): no second GPU
+   pass and no MoGe points; about 30 s per 100 frames.
+
+Why the geometry is VGGT's alone. Monocular MoGe depth placed on any poses puts the
+same physical point 6 to 20 % of its depth apart when it is seen from two frames
+(1 to 3 m for a parked car: one car drawn several times along the road). Cameras and
+depth of one VGGT-Omega chunk agree to 1 to 2 %, so:
+
+* every camera runs in chunks of 24 frames with 6 shared ones, rotations, centres and
+  depth maps are kept;
+* the scale of a chunk is the height of its cameras above the road plane fitted to its
+  own points, a constant of the rig; neighbouring chunks are tied by the depth ratio
+  of the same pixels in the shared frames; one least-squares problem over the log
+  scales. MoGe gives one number for the whole recording: that height in world units
+  (SIFT matches triangulated against the MoGe depth, median over the chunks);
+* the camera with the most frames carries the world: its chunks are chained by the
+  shared cameras. Every other camera is not chained at all: the rig is rigid, so its
+  pose is the reference camera's pose at the same timestamp times one rotation (road
+  normal and driving direction as both cameras see them at the same moments). Each
+  of its chunks is fitted onto that predicted track with its own scale and shift.
+  Holes in time split such a camera into segments, no chunk spans a hole;
+* the map draws every place from its near views only (the depth error grows with
+  the distance) and drops low-confidence pixels, depth edges and the vignetted
+  corners of the frames.
 
 Every recording opened from its own folder keeps its pack in `<recording>/map/`
 (`poses.json`, `meta.json`, `poses_report.json`, then the point cloud); the shipped
 `viewer/scenes/street` is never touched by it, and objects are listed per recording.
-Recomputing the poses moves the map built on the old ones to `map/stale_<time>/`.
+Recomputing the poses is a new world: the map built on the old ones moves to
+`map/stale_<time>/` and objects solved before have to be solved again.
 
-Checked against the COLMAP poses of the shipped recording (1580 frames, two cameras,
-180 m): position error median 1.0 m (max 3.0 m) after one similarity alignment,
-0.1 m inside 40-frame windows, relative rotation over 20 frames 1.1 deg, up vector
-0.2 deg; 5 to 6 minutes on a 16 GB card.
+Measured on the shipped recording (1580 frames, two cameras, 180 m) and on a
+450-frame stretch of it run as a new take:
+
+* the same point from two frames of camera A, near objects (closer than 15 m):
+  0.19 m apart 4 frames later, 0.45 m after 16, 0.87 m after 32; with MoGe depth on
+  chained poses it was 0.69, 1.31 and 2.95 m. Across the viewing ray the error is
+  under 1 % of the depth, what is left is depth noise along the ray;
+* against the COLMAP poses, camera A: position error median 0.8 m (max 1.8 m) after
+  one similarity alignment, 0.09 m inside 40-frame windows, relative rotation over
+  20 frames 1.1 deg, up vector 0.6 deg. The COLMAP track of camera B sits 1.1 m ahead
+  of camera A; the clouds of the two cameras agree best with both in one place (a
+  back-to-back unit), so the lever arm is zero (`NAST_RIG_LEVER` for another rig);
+* 6 minutes for the 1580 frames on a 16 GB card, 2 minutes for 450.
 
 World unit: one unit is 3.41 m (`NAST_WORLD_UNIT_M`), the scale of the shipped COLMAP
 world in which every distance constant of the solver was tuned. The depth pass of a

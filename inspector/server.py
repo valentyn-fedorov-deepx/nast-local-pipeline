@@ -380,9 +380,19 @@ def pose_pack():
     return None
 
 
+def pick_depth_dir(meta):
+    """the depth the solver unprojects: a recording posed by vggto_poses.py carries VGGT depth in the geometry of its poses
+    (depth_geo, same 16-bit format); everything else reads the MoGe dump"""
+    geo = VIDEO_DIR / "depth_geo"
+    if meta.get("depth_source") == "depth_geo" and geo.exists() and any(geo.glob("*.png")):
+        return geo
+    return VIDEO_DIR / "depth"
+
+
 def load_scene():
     # poses/meta live in scene_base so a clean re-process (no clouds yet)
     # still boots; the cloud itself is optional — depth solving needs none
+    global DEPTH_DIR
     base = HERE / "scene_base"
     src = pose_pack()
     if src is None:                                       # a new recording: frames decode and play, poses come from the MAP tab
@@ -400,7 +410,9 @@ def load_scene():
     STATE["poses"] = poses
     STATE["pos"] = pos
     STATE["by_name"] = {f["name"]: f for f in poses["frames"]}
-    print(f"[scene] cloud {len(pos):,} pts, {len(poses['frames'])} poses", flush=True)
+    DEPTH_DIR = pick_depth_dir(meta)
+    globals().get("_DCACHE", {}).clear()
+    print(f"[scene] cloud {len(pos):,} pts, {len(poses['frames'])} poses, depth from {DEPTH_DIR.name}/", flush=True)
     # raw import present but catalog not fully decoded -> kick the batch decode
     try:
         start_decode_if_needed()
@@ -1099,6 +1111,7 @@ def run_poses_stage(upd, prefix=""):
     if chk.returncode != 0:
         raise RuntimeError("torch in the venv has no CUDA — run install.sh on the GPU box")
     CLOUD_DIR.mkdir(parents=True, exist_ok=True)
+    again = (CLOUD_DIR / "poses.json").exists()
     if CLOUD_DIR != DEFAULT_CLOUD_DIR and (CLOUD_DIR / "pos.f32").exists():
         stale = CLOUD_DIR / ("stale_" + time.strftime("%Y%m%d_%H%M%S")); stale.mkdir()
         for q in list(CLOUD_DIR.glob("*.f32")) + list(CLOUD_DIR.glob("*.u8")) + list(CLOUD_DIR.glob("map_*.ply")) + \
@@ -1106,10 +1119,11 @@ def run_poses_stage(upd, prefix=""):
             if q.exists():
                 q.rename(stale / q.name)
         print(f"poses: the map built on the previous poses moved to {stale.name} (rebuild it)", flush=True)
-    upd("running", f"{prefix}camera poses: VGGT-Omega chain on the local GPU ({n} frames, ~1 min per 300)")
+    upd("running", f"{prefix}camera poses + depth: VGGT-Omega chain on the local GPU ({n} frames, ~1.5 min per 300)")
+    env = dict(os.environ); env["NAST_GEO_DIR"] = str(VIDEO_DIR)
     proc = subprocess.Popen([sys.executable, "-u", str(LOCAL_GPU / "vggto_poses.py"), str(ck), str(rgb),
-                             str(DEPTH_DIR) if dd else "none", str(CLOUD_DIR), "24", "6", "512"],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                             str(VIDEO_DIR / "depth") if dd else "none", str(CLOUD_DIR), "24", "6", "512"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     tail = []
     for line in proc.stdout:
         line = line.strip()
@@ -1118,14 +1132,22 @@ def run_poses_stage(upd, prefix=""):
         tail = (tail + [line])[-12:]
         if line.startswith("POSES_PROGRESS"):
             upd("running", f"{prefix}camera poses · {line[len('POSES_PROGRESS'):].strip()[:160]}")
-        elif line.startswith("camera ") or line.startswith("POSES_DONE"):
+        elif line.startswith("camera ") or line.startswith("POSES_DONE") or line.startswith("depth_geo"):
             print("poses:", line, flush=True)
     proc.wait()
     if proc.returncode != 0 or not (CLOUD_DIR / "poses.json").exists():
         raise RuntimeError("vggto_poses failed: " + " | ".join(tail[-4:])[-400:])
     with LOCK:
         load_scene()
+    POSES_NOTE[0] = ""
+    if again:                                             # a recomputed track is a new world: what was solved in the old one stays there
+        c = db(); n_obj = c.execute("SELECT COUNT(*) FROM objects WHERE COALESCE(dataset,'')=?", (dataset_key(),)).fetchone()[0]; c.close()
+        if n_obj:
+            POSES_NOTE[0] = f" · {n_obj} object(s) were solved on the previous poses and sit in the old world: solve them again"
     return len(STATE["poses"]["frames"])
+
+
+POSES_NOTE = [""]
 
 
 def enqueue_poses():
@@ -1140,7 +1162,7 @@ def enqueue_poses():
         try:
             with GPU_LOCK:
                 n = run_poses_stage(upd)
-            upd("done", f"camera poses ready: {n} frames — objects and the map build can use this recording now")
+            upd("done", f"camera poses ready: {n} frames — objects and the map build can use this recording now{POSES_NOTE[0]}")
         except Exception as e:
             upd("error", repr(e)[:400])
     threading.Thread(target=work, daemon=True).start()
@@ -1162,6 +1184,25 @@ def run_map(jid, cams):
         plydir.mkdir(parents=True, exist_ok=True)
         have = {f["name"][:1] for f in STATE["poses"]["frames"]}
         cam_list = [c for c in (["A", "B"] if cams == "AB" else [cams]) if c in have] or (["A", "B"] if cams == "AB" else [cams])
+        if LOCAL_ONLY and DEPTH_DIR.name == "depth_geo":
+            # posed by vggto_poses.py: cameras and depth already share one geometry, so the map is that depth unprojected
+            # (near views win). MoGe points on these poses would put one car in several places.
+            geo_ply = plydir / "map_geo.ply"
+            upd("running", f"1/3 points of the pose-consistent depth, camera{'s' if len(cam_list) > 1 else ''} {'+'.join(cam_list)} (a few minutes)")
+            sh([sys.executable, str(MONO / "geo_layer.py"), str(pack), str(VIDEO_DIR / "rgb"), str(DEPTH_DIR), str(geo_ply),
+                "1", "40", "0.0035", "15", "0.05", "16000000", "ALL" if len(cam_list) > 1 else cam_list[0] + "_"], timeout=7200)
+            upd("running", "2/3 merge + pack")
+            sh([sys.executable, str(MONO / "merge_omega_world.py"), str(pack), str(CLOUD_DIR), str(geo_ply), "none"], timeout=2400)
+            (CLOUD_DIR / "index.html").write_bytes((VIEWER / "point_viewer.html").read_bytes())
+            upd("running", "3/3 normals of the map")
+            try:
+                sh([sys.executable, str(MONO / "pack_add_normals.py"), str(CLOUD_DIR), "32"], timeout=3600)
+            except Exception:
+                pass
+            with LOCK:
+                load_scene()
+            upd("done", "/scene/street/index.html")
+            return
         CK = "/nvme0n1-disk/valentyn.fedorov/vggt-omega/checkpoints/vggt_omega_1b_512.pt"
         env = ("source /nvme0n1-disk/valentyn.fedorov/miniconda3/etc/profile.d/conda.sh && "
                "conda activate vggto && cd /nvme0n1-disk/valentyn.fedorov/dualcam && ")
