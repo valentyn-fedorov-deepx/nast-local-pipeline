@@ -84,6 +84,12 @@ The GUI status bar must say "Backend online · N pts indexed".
 * **Map rebuild**: map tab → rebuild. Runs `local_gpu/vggto_local.py` per
   camera on the local GPU: chunks start at 24 frames @ 512 px and halve
   automatically on OOM (12 GB cards degrade gracefully). ~10 min/camera.
+* **Poses of a new recording**: a take that is not the shipped street drive has no
+  camera poses, so objects and the map cannot be solved on it yet. MAP tab,
+  **poses** (needs the decode and the depth pass finished; about one minute per 300
+  frames on the local GPU; `build map` starts it by itself when poses are missing).
+  The recording keeps its own pack in `<folder>/map/`; `map/poses_report.json` holds
+  the numbers of the run (matches per chunk, seam gaps, registration of camera B).
 * **New raw take**: drop the `.raw12` frames into a folder (`monocars/extract_raw.py`
   pulls them out of the rig tars) and open that folder in the app — rgb,
   rgb_orig and the catalog are decoded by themselves. `monocars/decode_raw.py

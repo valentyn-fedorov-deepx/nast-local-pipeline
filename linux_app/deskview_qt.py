@@ -403,7 +403,13 @@ class Deskview(QMainWindow):
         b = QPushButton("↻"); b.setFixedWidth(34); b.clicked.connect(self.load_scenes)
         bh.addWidget(eyebrow("scene")); bh.addSpacing(8)
         bh.addWidget(self.cmb_scene); bh.addWidget(b)
-        bh.addSpacing(22); bh.addWidget(eyebrow("build map")); bh.addSpacing(6)
+        bh.addSpacing(22); bh.addWidget(eyebrow("new recording")); bh.addSpacing(6)
+        pb = QPushButton("poses")
+        pb.setToolTip("camera poses of the opened recording (local VGGT chain, ~1 min per 300 frames; needs decode + depth done). "
+                      "Objects and the map build need them; 'build map' runs this by itself when they are missing.")
+        pb.clicked.connect(self.build_poses)
+        bh.addWidget(pb)
+        bh.addSpacing(14); bh.addWidget(eyebrow("build map")); bh.addSpacing(6)
         for cams in ("A", "B", "AB"):
             mb = QPushButton(cams if cams != "AB" else "A + B")
             mb.setToolTip(f"rebuild the street point cloud from camera {cams} (local VGGT, ~10 min/camera)")
@@ -427,6 +433,17 @@ class Deskview(QMainWindow):
         except Exception as ex:
             self.lbl_map.setText(f"map build failed: {ex}")
 
+    def build_poses(self):
+        try:
+            r = api_post("/api/build_poses", {}, timeout=30)
+            if r.get("error"):
+                self.lbl_map.setText(f"poses: {r['error']}"); return
+            self.map_job = r.get("job_id")
+            self.lbl_map.setText(f"poses: job #{self.map_job} queued")
+            self.map_timer.start(3000)
+        except Exception as ex:
+            self.lbl_map.setText(f"poses failed: {ex}")
+
     def poll_map_job(self):
         try:
             jobs = api_get("/api/jobs", timeout=3)
@@ -442,7 +459,7 @@ class Deskview(QMainWindow):
             self.map_timer.stop()
             if st == "done":
                 self.load_scenes()                      # fresh base map -> reload the viewer
-                self.lbl_map.setText(f"job #{j['id']} · DONE — map rebuilt, viewer reloaded")
+                self.lbl_map.setText(f"job #{j['id']} · DONE — " + ("map rebuilt, viewer reloaded" if j.get("kind") == "map" else det[:200]))
 
     def _pane_3d(self):
         pane = QWidget(); h = QHBoxLayout(pane); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(0)
@@ -722,7 +739,7 @@ class Deskview(QMainWindow):
                 it.widget().deleteLater()
         by_obj = {o["id"]: o.get("label", "") for o in self.objects}
         for j in jobs[:6]:
-            title = "Point cloud" if j.get("kind") == "map" else \
+            title = "Point cloud" if j.get("kind") == "map" else "Camera poses" if j.get("kind") == "poses" else \
                 f"Reconstruction · {by_obj.get(j.get('object_id'), '')}"
             st = j.get("status", "")
             col = {"running": ACCENT, "queued": FAINT, "done": GO, "error": BAD}.get(st, FG2)

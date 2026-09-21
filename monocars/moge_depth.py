@@ -14,6 +14,7 @@ Usage: python moge_depth.py <scene_dir> [fov_x_deg|auto] [device]
 Prints DEPTH_START / DEPTH_PROGRESS i/n ... / DEPTH_DONE for the service.
 """
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -40,9 +41,10 @@ if not todo:
 from moge.model.v2 import MoGeModel                                  # noqa: E402
 model = MoGeModel.from_pretrained("Ruicheng/moge-2-vitl-normal").to(DEV).eval()
 print("moge loaded", flush=True)
+UNIT_M = float(os.environ.get("NAST_WORLD_UNIT_M", "1.0"))          # the service stores depth in ITS world unit (3.41 m)
 (OUT / "meta_depth.json").write_text(json.dumps(
-    {"unit": "mm", "invalid": 0, "model": "Ruicheng/moge-2-vitl-normal", "fov_x": fov_x,
-     "source": SRC.name}, indent=1))
+    {"unit": "world unit / 1000" if UNIT_M != 1.0 else "mm", "world_unit_m": UNIT_M, "invalid": 0,
+     "model": "Ruicheng/moge-2-vitl-normal", "fov_x": fov_x, "source": SRC.name}, indent=1))
 
 t0 = time.time(); ok = 0; err = 0
 for i, p in enumerate(todo, 1):
@@ -60,7 +62,7 @@ for i, p in enumerate(todo, 1):
         if depth.shape != (H, W):
             depth = cv2.resize(depth, (W, H), interpolation=cv2.INTER_LINEAR)
             mask = cv2.resize(mask.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST) > 0
-        u16 = np.where(mask & np.isfinite(depth), np.clip(depth * 1000.0, 1, 65535), 0).astype(np.uint16)
+        u16 = np.where(mask & np.isfinite(depth), np.clip(depth * 1000.0 / UNIT_M, 1, 65535), 0).astype(np.uint16)
         cv2.imwrite(str(OUT / f"{p.stem}.png"), u16)
         ok += 1
     except torch.cuda.OutOfMemoryError:

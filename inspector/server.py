@@ -25,6 +25,9 @@ HERE = Path(__file__).parent
 VIEWER = HERE.parent / "viewer"
 CLOUD_DIR = VIEWER / "scenes" / "street"           # dense cloud + poses (packed)
 VIDEO_DIR = VIEWER / "scenes" / "street_video"     # rgb/ + nxyz/ frames
+DEFAULT_CLOUD_DIR, DEFAULT_VIDEO_DIR = CLOUD_DIR, VIDEO_DIR
+# A recording opened from another folder carries its own pack in <dataset>/map: poses.json + meta.json from
+# local_gpu/vggto_poses.py and, after a map build, the point cloud. CLOUD_DIR follows the dataset (open_dataset).
 # reconstruction crops come from the DEGLARED frames (Stokes-minimum colour):
 # specular sheen on glass/paint never reaches TRELLIS. NAST_DEGLARE_CROPS=0
 # reverts to the plain rgb frames.
@@ -36,6 +39,10 @@ DEGLARE_CROPS = os.environ.get("NAST_DEGLARE_CROPS", "1") != "0"
 # is rebuilt by the local VGGT-Omega runner (12-16 GB VRAM). NAST_LOCAL=0
 # restores the tex1 TRELLIS/Omega route when the GPU server is reachable.
 LOCAL_ONLY = os.environ.get("NAST_LOCAL", "1") != "0"
+# one world unit in metres. The shipped street scene is a COLMAP world where 1 unit = 3.41 m, and every distance constant
+# of the ROI solver, the map voxels etc. was tuned in it; MoGe-2 depth of NEW recordings is stored in the same unit, so
+# the poses made from it (vggto_poses.py) and everything downstream keep that convention.
+WORLD_UNIT_M = float(os.environ.get("NAST_WORLD_UNIT_M", "3.41"))
 TRELLIS_LOCAL = os.environ.get("NAST_TRELLIS", "1") != "0"   # 0 = never use the local TRELLIS env
 LOCAL_GPU = HERE.parent / "local_gpu"
 
@@ -154,6 +161,7 @@ def moge_python():
 def _moge_env(py):
     """caches of the TRELLIS install when its python runs MoGe (weights land on the big disk)"""
     env = dict(os.environ); env["PYTHONNOUSERSITE"] = "1"
+    env["NAST_WORLD_UNIT_M"] = str(WORLD_UNIT_M)
     troot = trellis_root()
     if str(py).startswith(str(troot)):
         env.update(HF_HOME=str(troot / "cache" / "hf"), TORCH_HOME=str(troot / "cache" / "torch"),
@@ -262,18 +270,21 @@ def open_dataset(path):
     rgb/, rgb_orig/ and the normals catalog by itself; a folder that already
     has rgb/ works as before. The map/poses stay; frames, raw, layers,
     reconstruction crops all follow the new folder."""
-    global VIDEO_DIR, DEPTH_DIR
+    global VIDEO_DIR, DEPTH_DIR, CLOUD_DIR
     p = Path(path).expanduser().resolve()
     if raw_dir(p) is None and not (p / "rgb").exists():
         raise ValueError(f"no .raw12 frames and no rgb/ inside {p}")
     (p / "rgb").mkdir(exist_ok=True)
     VIDEO_DIR = p
     DEPTH_DIR = p / "depth"
+    CLOUD_DIR = DEFAULT_CLOUD_DIR if p == DEFAULT_VIDEO_DIR.resolve() else p / "map"   # its own poses + map
     DECODE.update(running=False, done=0, err=0, started=0)
-    start_decode_if_needed()
+    with LOCK:
+        load_scene()                                      # poses of THIS recording (or none yet); also starts the decode
     total, done = decode_counts()
     return {"path": str(p), "frames": len(list((p / "rgb").glob("*.jpg"))),
-            "raw": total, "decoded": done, "decoding": DECODE["running"]}
+            "raw": total, "decoded": done, "decoding": DECODE["running"],
+            "poses": len(STATE["poses"]["frames"])}
 
 
 def build_point_asset(box, out_ply, cap=1_500_000, margin=1.25):
@@ -340,13 +351,47 @@ STATE = {"pos": None, "poses": None, "meta": None, "by_name": {}}
 LOCK = threading.Lock()
 
 
+def dataset_key():
+    """'' for the shipped street recording, else the folder of the opened one: objects live in the world of their recording"""
+    return "" if CLOUD_DIR == DEFAULT_CLOUD_DIR else str(VIDEO_DIR)
+
+
+def dataset_frame_stems():
+    rgb = VIDEO_DIR / "rgb"
+    stems = {q.stem for q in rgb.glob("*.jpg")} if rgb.exists() else set()
+    return stems or {q.stem for q in raw_frames()}
+
+
+def pose_pack():
+    """the folder whose poses.json + meta.json describe the ACTIVE dataset: its own pack (vggto_poses.py or a built map),
+    else the shipped scene_base when that recording is the one on screen, else None (a new take without poses yet)"""
+    if (CLOUD_DIR / "poses.json").exists() and (CLOUD_DIR / "meta.json").exists():
+        return CLOUD_DIR
+    base = HERE / "scene_base"
+    if CLOUD_DIR == DEFAULT_CLOUD_DIR:
+        return base
+    try:
+        known = {Path(f["name"]).stem for f in json.loads((base / "poses.json").read_text())["frames"]}
+        stems = dataset_frame_stems()
+        if stems and len(stems & known) >= 0.5 * len(stems):
+            return base                                   # the shipped recording opened from another folder
+    except Exception:
+        pass
+    return None
+
+
 def load_scene():
     # poses/meta live in scene_base so a clean re-process (no clouds yet)
     # still boots; the cloud itself is optional — depth solving needs none
     base = HERE / "scene_base"
-    src = CLOUD_DIR if (CLOUD_DIR / "meta.json").exists() else base
-    meta = json.loads((src / "meta.json").read_text())
-    poses = json.loads((src / "poses.json").read_text())
+    src = pose_pack()
+    if src is None:                                       # a new recording: frames decode and play, poses come from the MAP tab
+        meta = json.loads((base / "meta.json").read_text())
+        meta.update(count=0, name="new recording: no camera poses yet")
+        poses = {"frames": [], "up": meta.get("up")}
+    else:
+        meta = json.loads((src / "meta.json").read_text())
+        poses = json.loads((src / "poses.json").read_text())
     if (CLOUD_DIR / "pos.f32").exists():
         pos = np.fromfile(CLOUD_DIR / "pos.f32", dtype=np.float32).reshape(-1, 3)
     else:
@@ -390,7 +435,8 @@ def init_db():
         object_id INTEGER, kind TEXT, status TEXT, detail TEXT, created REAL);
     """)
     for ddl in ("ALTER TABLE objects ADD COLUMN pose TEXT",
-                "ALTER TABLE objects ADD COLUMN obs TEXT"):
+                "ALTER TABLE objects ADD COLUMN obs TEXT",
+                "ALTER TABLE objects ADD COLUMN dataset TEXT"):
         try:
             c.execute(ddl)
         except sqlite3.OperationalError:
@@ -1004,13 +1050,15 @@ def map_basis():
 
 
 def build_map():
+    if not STATE["poses"]["frames"]:
+        return {"traj": [], "objects": [], "bounds": [0, 0, 1, 1]}
     mu, a1, a2 = map_basis()
     C = np.array([f["p"] for f in STATE["poses"]["frames"]])
     tx = (C - mu) @ a1; ty = (C - mu) @ a2
     traj = np.stack([tx, ty], -1).tolist()
     objs = []
     c = db()
-    for o in c.execute("SELECT * FROM objects").fetchall():
+    for o in c.execute("SELECT * FROM objects WHERE COALESCE(dataset,'')=?", (dataset_key(),)).fetchall():
         p = np.array([o["cx"], o["cy"], o["cz"]]) - mu
         objs.append({"id": o["id"], "label": o["label"],
                      "x": float(p @ a1), "y": float(p @ a2),
@@ -1033,6 +1081,72 @@ def enqueue_map(cams):
     return jid
 
 
+def run_poses_stage(upd, prefix=""):
+    """camera poses of the active recording: local_gpu/vggto_poses.py -> CLOUD_DIR/{poses,meta}.json. Caller holds GPU_LOCK."""
+    ck = LOCAL_GPU / "models" / "vggt_omega_1b_512.pt"
+    if not ck.exists():
+        raise RuntimeError("VGGT weights missing: local_gpu/models/vggt_omega_1b_512.pt")
+    rgb = VIDEO_DIR / "rgb"
+    n = len(list(rgb.glob("*.jpg"))) if rgb.exists() else 0
+    if n < 8:
+        raise RuntimeError("no decoded frames yet — open the raw folder and let the decode finish")
+    dt, dd = depth_counts()
+    if dd < n and moge_python() is not None:
+        raise RuntimeError(f"MoGe depth is not complete yet ({dd}/{n}) — the poses take their scale from it; "
+                           f"start again when the header shows depth {n}/{n}")
+    chk = subprocess.run([sys.executable, "-c", "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 3)"],
+                         capture_output=True, text=True)
+    if chk.returncode != 0:
+        raise RuntimeError("torch in the venv has no CUDA — run install.sh on the GPU box")
+    CLOUD_DIR.mkdir(parents=True, exist_ok=True)
+    if CLOUD_DIR != DEFAULT_CLOUD_DIR and (CLOUD_DIR / "pos.f32").exists():
+        stale = CLOUD_DIR / ("stale_" + time.strftime("%Y%m%d_%H%M%S")); stale.mkdir()
+        for q in list(CLOUD_DIR.glob("*.f32")) + list(CLOUD_DIR.glob("*.u8")) + list(CLOUD_DIR.glob("map_*.ply")) + \
+                [CLOUD_DIR / "cells.json", CLOUD_DIR / "index.html"]:
+            if q.exists():
+                q.rename(stale / q.name)
+        print(f"poses: the map built on the previous poses moved to {stale.name} (rebuild it)", flush=True)
+    upd("running", f"{prefix}camera poses: VGGT-Omega chain on the local GPU ({n} frames, ~1 min per 300)")
+    proc = subprocess.Popen([sys.executable, "-u", str(LOCAL_GPU / "vggto_poses.py"), str(ck), str(rgb),
+                             str(DEPTH_DIR) if dd else "none", str(CLOUD_DIR), "24", "6", "512"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    tail = []
+    for line in proc.stdout:
+        line = line.strip()
+        if not line:
+            continue
+        tail = (tail + [line])[-12:]
+        if line.startswith("POSES_PROGRESS"):
+            upd("running", f"{prefix}camera poses · {line[len('POSES_PROGRESS'):].strip()[:160]}")
+        elif line.startswith("camera ") or line.startswith("POSES_DONE"):
+            print("poses:", line, flush=True)
+    proc.wait()
+    if proc.returncode != 0 or not (CLOUD_DIR / "poses.json").exists():
+        raise RuntimeError("vggto_poses failed: " + " | ".join(tail[-4:])[-400:])
+    with LOCK:
+        load_scene()
+    return len(STATE["poses"]["frames"])
+
+
+def enqueue_poses():
+    c = db()
+    jid = c.execute("INSERT INTO jobs(object_id,kind,status,detail,created) VALUES(?,?,?,?,?)",
+                    (0, "poses", "queued", "camera poses", time.time())).lastrowid
+    c.commit(); c.close()
+
+    def work():
+        def upd(st, detail):
+            c2 = db(); c2.execute("UPDATE jobs SET status=?,detail=? WHERE id=?", (st, detail, jid)); c2.commit(); c2.close()
+        try:
+            with GPU_LOCK:
+                n = run_poses_stage(upd)
+            upd("done", f"camera poses ready: {n} frames — objects and the map build can use this recording now")
+        except Exception as e:
+            upd("error", repr(e)[:400])
+    threading.Thread(target=work, daemon=True).start()
+    return jid
+
+
 def run_map(jid, cams):
     """Full map build: Omega chunks per camera on tex1 -> anchors into the
     COLMAP world -> local merge into scenes/street (the base map) + nxyz."""
@@ -1040,14 +1154,21 @@ def run_map(jid, cams):
         c = db(); c.execute("UPDATE jobs SET status=?,detail=? WHERE id=?",
                             (st, detail, jid)); c.commit(); c.close()
     try:
-        cam_list = ["A", "B"] if cams == "AB" else [cams]
+        if LOCAL_ONLY and not STATE["poses"]["frames"]:
+            with GPU_LOCK:
+                run_poses_stage(upd, "poses first · ")
+        pack = pose_pack() or (HERE / "scene_base")
+        plydir = VIEWER / "scenes" if CLOUD_DIR == DEFAULT_CLOUD_DIR else CLOUD_DIR
+        plydir.mkdir(parents=True, exist_ok=True)
+        have = {f["name"][:1] for f in STATE["poses"]["frames"]}
+        cam_list = [c for c in (["A", "B"] if cams == "AB" else [cams]) if c in have] or (["A", "B"] if cams == "AB" else [cams])
         CK = "/nvme0n1-disk/valentyn.fedorov/vggt-omega/checkpoints/vggt_omega_1b_512.pt"
         env = ("source /nvme0n1-disk/valentyn.fedorov/miniconda3/etc/profile.d/conda.sh && "
                "conda activate vggto && cd /nvme0n1-disk/valentyn.fedorov/dualcam && ")
         total = len(cam_list) + 3
         with GPU_LOCK:
             for i, cam in enumerate(cam_list):
-                ply = VIEWER / "scenes" / f"map_{cam}.ply"
+                ply = plydir / f"map_{cam}.ply"
                 if LOCAL_ONLY:
                     upd("running", f"{i + 1}/{total} Ω chunks, camera {cam} "
                                    f"(local GPU, chunk auto-fits 12-16 GB, ~20-30 min)")
@@ -1080,25 +1201,25 @@ def run_map(jid, cams):
         upd("running", f"{len(cam_list) + 1}/{total} collecting clouds")
         pairs = []
         for cam in cam_list:
-            ply = VIEWER / "scenes" / f"map_{cam}.ply"
+            ply = plydir / f"map_{cam}.ply"
             if not LOCAL_ONLY:
                 sh(["scp", "-q", f"{TEX}:{TEXD}/map_{cam}.ply", str(ply)], timeout=1800)
             pairs += [str(ply), "none"]
         # fine-detail layer: per-pixel MoGe depth of every 2nd frame -- thin
         # poles, edges and far objects that Omega's confidence cut drops
         upd("running", f"{len(cam_list) + 2}/{total} MoGe layer (small objects, edges)")
-        moge_ply = VIEWER / "scenes" / "map_moge.ply"
+        moge_ply = plydir / "map_moge.ply"
         try:
-            sh([sys.executable, str(MONO / "moge_layer.py"), str(HERE / "scene_base"),
+            sh([sys.executable, str(MONO / "moge_layer.py"), str(pack),
                 str(VIDEO_DIR / "rgb"), str(VIDEO_DIR / "depth"), str(moge_ply),
                 "2", "3", "0.012", "45"], timeout=3600)
             pairs += [str(moge_ply), "none"]
         except Exception as e:
             print("moge layer skipped:", e, flush=True)
         upd("running", f"{total}/{total} merge + pack + nxyz")
-        street = VIEWER / "scenes" / "street"
+        street = CLOUD_DIR
         sh([sys.executable, str(MONO / "merge_omega_world.py"),
-            str(HERE / "scene_base"), str(street), *pairs], timeout=2400)
+            str(pack), str(street), *pairs], timeout=2400)
         (street / "index.html").write_bytes((VIEWER / "point_viewer.html").read_bytes())
         try:
             sh([sys.executable, str(MONO / "pack_add_normals.py"), str(street), "32"],
@@ -1539,13 +1660,17 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/scene/"):
             rel = unquote(p[len("/scene/"):])
             parts = rel.split("/")
-            tgt = (VIEWER / "scenes" / parts[0] /
-                   "/".join(parts[1:] or ["index.html"])).resolve()
-            if not str(tgt).startswith(str((VIEWER / "scenes").resolve())):
+            if parts[0] == "street" and CLOUD_DIR != DEFAULT_CLOUD_DIR:      # the map of the opened recording
+                root = CLOUD_DIR.resolve()
+                tgt = (CLOUD_DIR / "/".join(parts[1:] or ["index.html"])).resolve()
+            else:
+                root = (VIEWER / "scenes").resolve()
+                tgt = (VIEWER / "scenes" / parts[0] / "/".join(parts[1:] or ["index.html"])).resolve()
+            if not str(tgt).startswith(str(root)):
                 return self._send(403, {"error": "path"})
             return self._file(tgt)
         if p == "/api/objects3d":
-            c = db(); rows = c.execute("SELECT * FROM objects").fetchall(); c.close()
+            c = db(); rows = c.execute("SELECT * FROM objects WHERE COALESCE(dataset,'')=?", (dataset_key(),)).fetchall(); c.close()
             out = []
             for o in rows:
                 out.append({"id": o["id"], "label": o["label"],
@@ -1561,7 +1686,13 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, tr)
         if p == "/api/scenes":
             out = []
-            for d in sorted((VIEWER / "scenes").iterdir()):
+            own = CLOUD_DIR != DEFAULT_CLOUD_DIR
+            if own and (CLOUD_DIR / "pos.f32").exists() and (CLOUD_DIR / "index.html").exists():
+                out.append({"name": "street", "url": "/scene/street/index.html"})
+            sdir = VIEWER / "scenes"
+            for d in (sorted(sdir.iterdir()) if sdir.exists() else []):
+                if own and d.name == "street":
+                    continue                              # the shipped map belongs to another recording
                 if d.is_dir() and (d / "pos.f32").exists() and (d / "index.html").exists():
                     out.append({"name": d.name, "url": f"/scene/{d.name}/index.html"})
             return self._send(200, out)
@@ -1571,15 +1702,17 @@ class H(BaseHTTPRequestHandler):
                                     "count": m["count"], "nframes": len(ps),
                                     "up": STATE["poses"].get("up") or m.get("up")})
         if p == "/api/frames":
-            ps = STATE["poses"]["frames"]
-            A = [f["name"] for f in ps if f["name"].startswith("A_")]
-            B = [f["name"] for f in ps if f["name"].startswith("B_")]
-            return self._send(200, {"A": A, "B": B})
+            rgb = VIDEO_DIR / "rgb"
+            names = sorted(q.name for q in rgb.glob("*.jpg")) if rgb.exists() else []
+            names = names or [f["name"] for f in STATE["poses"]["frames"]]
+            A = [n for n in names if n.startswith("A_")]
+            B = [n for n in names if n.startswith("B_")]
+            return self._send(200, {"A": A or [n for n in names if not n.startswith("B_")], "B": B})
         if p == "/api/poses":
             return self._send(200, {f["name"]: {"q": f["q"], "p": f["p"]}
                                     for f in STATE["poses"]["frames"]})
         if p == "/api/objects":
-            c = db(); rows = [dict(r) for r in c.execute("SELECT * FROM objects").fetchall()]; c.close()
+            c = db(); rows = [dict(r) for r in c.execute("SELECT * FROM objects WHERE COALESCE(dataset,'')=?", (dataset_key(),)).fetchall()]; c.close()
             return self._send(200, rows)
         if p == "/api/map":
             return self._send(200, build_map())
@@ -1589,8 +1722,11 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/dataset":
             total, done = decode_counts()
             dt, dd = depth_counts()
+            stems = dataset_frame_stems()
+            posed = sum(1 for f in STATE["poses"]["frames"] if Path(f["name"]).stem in stems)
             return self._send(200, {"path": str(VIDEO_DIR), "raw": total, "decoded": done,
-                                    "depth": dd, "depth_total": dt,
+                                    "depth": dd, "depth_total": dt, "poses": posed, "poses_total": len(stems),
+                                    "poses_own": (CLOUD_DIR / "poses.json").exists() and CLOUD_DIR != DEFAULT_CLOUD_DIR,
                                     "frames": len(list((VIDEO_DIR / "rgb").glob("*.jpg")))
                                     if (VIDEO_DIR / "rgb").exists() else 0})
         if p == "/api/decode_status":
@@ -1631,6 +1767,9 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"running": DECODE["running"], "total": total, "done": done})
         if p == "/api/roi":
             b = self._body()
+            if b.get("frame") not in STATE["by_name"]:
+                return self._send(422, {"error": "this recording has no camera poses yet: MAP tab, 'poses' button (needs the decode "
+                                                 "and the depth pass finished)", "npts": 0})
             with LOCK:
                 box = solve_roi(b["kind"], b["pts"], b["frame"])
             if "error" in box:
@@ -1638,12 +1777,12 @@ class H(BaseHTTPRequestHandler):
             c = db()
             first_obs = [{"frame": b["frame"], "kind": b["kind"], "pts": b["pts"]}]
             oid = c.execute(
-                "INSERT INTO objects(label,frame,cam,kind,pts,cx,cy,cz,sx,sy,sz,npts,created,pose,obs)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO objects(label,frame,cam,kind,pts,cx,cy,cz,sx,sy,sz,npts,created,pose,obs,dataset)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (b.get("label", "?"), b["frame"], b.get("cam", "A"), b["kind"],
                  json.dumps(b["pts"]), box["cx"], box["cy"], box["cz"],
                  box["sx"], box["sy"], box["sz"], box["npts"], time.time(),
-                 json.dumps(box.get("pose")), json.dumps(first_obs))).lastrowid
+                 json.dumps(box.get("pose")), json.dumps(first_obs), dataset_key())).lastrowid
             c.commit()
             row = dict(c.execute("SELECT * FROM objects WHERE id=?", (oid,)).fetchone()); c.close()
             return self._send(200, row)
@@ -1664,6 +1803,10 @@ class H(BaseHTTPRequestHandler):
             except ValueError as ex:
                 return self._send(404, {"error": str(ex)})
             return self._send(200, {"job_id": jid})
+        if p == "/api/build_poses":
+            if not LOCAL_ONLY:
+                return self._send(422, {"error": "poses are computed on the local GPU (NAST_LOCAL=1)"})
+            return self._send(200, {"job_id": enqueue_poses()})
         if p == "/api/build_map":
             b = self._body()
             cams = b.get("cams", "AB")

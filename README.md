@@ -77,6 +77,39 @@ data (poses from `inspector/scene_base`) so a fresh clone opens fine.
 * `NAST_DEGLARE_CROPS=0` feeds reconstruction from the original (non-deglared)
   frames.
 
+## A new recording
+
+The shipped street scene carries COLMAP poses. A fresh take has none, and the ROI
+solve, the object views and the map build all need a pose per frame. The route:
+
+1. **Open data folder**: the folder with the `.raw12` frames. Decode (rgb, rgb_orig,
+   the normals catalog) and the MoGe-2 depth pass start by themselves.
+2. MAP tab, **poses**: `local_gpu/vggto_poses.py` on the local GPU, about one minute
+   per 300 frames. VGGT-Omega cameras on overlapping chunks are chained into one
+   track; the scale of every chunk comes from triangulated SIFT matches against the
+   MoGe depth (the depth maps of VGGT are not scale-consistent with its cameras, so
+   they are not used); neighbouring chunks share camera centres, which ties the
+   scales together; the world "up" is the camera axis that points at the sky; the
+   second camera of the rig follows the first one by the shared trajectory, piece by
+   piece when the recording has holes in time. `build map` runs this step by itself
+   when the recording has no poses.
+3. **build map** and objects as before.
+
+Every recording opened from its own folder keeps its pack in `<recording>/map/`
+(`poses.json`, `meta.json`, `poses_report.json`, then the point cloud); the shipped
+`viewer/scenes/street` is never touched by it, and objects are listed per recording.
+Recomputing the poses moves the map built on the old ones to `map/stale_<time>/`.
+
+Checked against the COLMAP poses of the shipped recording (1580 frames, two cameras,
+180 m): position error median 1.0 m (max 3.0 m) after one similarity alignment,
+0.1 m inside 40-frame windows, relative rotation over 20 frames 1.1 deg, up vector
+0.2 deg; 5 to 6 minutes on a 16 GB card.
+
+World unit: one unit is 3.41 m (`NAST_WORLD_UNIT_M`), the scale of the shipped COLMAP
+world in which every distance constant of the solver was tuned. The depth pass of a
+new recording writes MoGe-2 depth in that unit, so its poses and everything
+downstream keep the convention.
+
 ## Locked layer catalog
 
 `nxyz`, `n_xy`, `n_xz`, `phys`, `diffuse`, `specv2`, `edge`, `rgb_deglare`
