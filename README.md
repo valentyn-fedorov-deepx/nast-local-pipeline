@@ -87,8 +87,12 @@ solve, the object views and the map build all need a pose per frame. The route:
    everywhere in the pipeline. The Orthovector units write bare timestamps into a
    folder per unit, so first `python monocars/import_rig.py <out> <unit 1 folder>
    <unit 2 folder>` links them into one folder with the letters (hard links, no
-   copy; searches the unit folders recursively, keeps their session.json). Decode
-   (rgb, rgb_orig, the normals catalog) and the MoGe-2 depth pass start by themselves.
+   copy; searches the unit folders recursively, keeps their session.json) and writes
+   `rig.json`: how each camera's image turns upright (session.json
+   `pipeline_rotation_deg`; the 18.09 rig is landscape with the sensor upside down).
+   The decoder stores every image turned so that the app shows it upright and the
+   normals point the right way; the raw itself is never rotated. Decode (rgb,
+   rgb_orig, the normals catalog) and the MoGe-2 depth pass start by themselves.
 2. MAP tab, **poses**: `local_gpu/vggto_poses.py` on the local GPU, about 25 s per
    100 frames. It makes the camera poses AND the depth the rest of the pipeline
    unprojects (`<recording>/depth_geo/`, same 16-bit format as the MoGe dump, with

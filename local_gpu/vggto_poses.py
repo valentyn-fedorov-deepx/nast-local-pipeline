@@ -53,7 +53,7 @@ RES = int(sys.argv[7]) if len(sys.argv) > 7 else 512
 MAXF = int(sys.argv[8]) if len(sys.argv) > 8 else 0
 GEO = Path(os.environ.get("NAST_GEO_DIR") or IMAGES.parent)
 TMP = OUT / "_geo"; TMP.mkdir(exist_ok=True)
-FX_RATIO = 641.601591290442 / 1224.0              # calibrated lens of the rig cameras: fx / image width
+FX_RATIO = 641.601591290442 / 1224.0              # calibrated lens of the rig cameras: fx / long side of the frame
 RIG_LEVER = [float(v) for v in os.environ.get("NAST_RIG_LEVER", "0,0,0").split(",")]      # back-to-back unit: both cameras in one place
 GAPS = (4, 8)                                      # frame gaps of the triangulation pairs
 PAIR_STEP = 5                                      # every 5th frame starts a pair: ~8 pairs per chunk, thousands of matches
@@ -129,7 +129,7 @@ for n in names_all:
 if MAXF:
     groups = {k: v[:MAXF] for k, v in groups.items()}
 im0 = cv2.imread(str(IMAGES / names_all[0])); H_, W_ = im0.shape[:2]
-FX = FX_RATIO * W_; CX = W_ / 2.0; CY = H_ / 2.0
+FX = FX_RATIO * max(W_, H_); CX = W_ / 2.0; CY = H_ / 2.0          # a rig stored in portrait keeps the same lens
 TOTAL = sum(len(v) for v in groups.values())
 print(f"POSES_START frames={TOTAL} cameras={list(groups)} size={W_}x{H_} chunk={CHUNK} overlap={OVER} res={RES} "
       f"depth={'yes' if DEPTHS else 'NO (the world will not be metric: one unit = the camera height)'}", flush=True)

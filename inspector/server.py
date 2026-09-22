@@ -96,20 +96,20 @@ def live_decode(stem):
         import importlib
         sys.path.insert(0, str(HERE.parent / "monocars"))
         pn = importlib.import_module("polar_normals")
-        fr = pn.PolarFrame(raw.read_bytes())
+        fr, rig = pn.decode_file(raw)             # rig.json of the recording: row start in the file, mount orientation
         for sub, fn in (("rgb", fr.color_work), ("rgb_orig", fr.color_recorder)):
             out = VIDEO_DIR / sub / f"{stem}.jpg"
             if not out.exists():
                 out.parent.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(out), fn(), [int(cv2.IMWRITE_JPEG_QUALITY), 92])
-        P = pn.products(fr)
+                cv2.imwrite(str(out), pn.orient(fn(), rig), [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        P = pn.products(fr, roll_deg=rig["roll"])
         for k in LIVE_PRODUCTS:
             if k not in P:
                 continue
             d2 = VIDEO_DIR / "layers" / k
             d2.mkdir(parents=True, exist_ok=True)
             if not (d2 / f"{stem}.jpg").exists():
-                cv2.imwrite(str(d2 / f"{stem}.jpg"), P[k], [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                cv2.imwrite(str(d2 / f"{stem}.jpg"), pn.orient(P[k], rig), [int(cv2.IMWRITE_JPEG_QUALITY), 90])
         return True
 
 
@@ -253,9 +253,21 @@ def depth_counts():
 
 
 def scene_fov_x():
+    """horizontal FOV of the frames MoGe will see: the lens focal against the width of the decoded images (a rig stored
+    in portrait has the narrow side across)"""
     try:
         I = STATE["meta"]["intrinsics"]
-        return f"{math.degrees(2 * math.atan(I['w'] / (2 * I['fx']))):.3f}"
+        w, h = I["w"], I["h"]
+        for sub in ("rgb_orig", "rgb"):
+            q = next((VIDEO_DIR / sub).glob("*.jpg"), None) if (VIDEO_DIR / sub).exists() else None
+            if q is not None:
+                import cv2
+                im = cv2.imread(str(q))
+                if im is not None:
+                    h, w = im.shape[:2]
+                    break
+        fx = I["fx"] * max(w, h) / max(I["w"], I["h"])
+        return f"{math.degrees(2 * math.atan(w / (2 * fx))):.3f}"
     except Exception:
         return "auto"
 

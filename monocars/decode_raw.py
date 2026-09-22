@@ -39,23 +39,23 @@ def complete(stem):
 def work(path):
     stem = Path(path).stem
     try:
-        from polar_normals import PolarFrame, products
+        from polar_normals import decode_file, orient, products
         if complete(stem):
             return stem, None
-        fr = PolarFrame(Path(path).read_bytes())
+        fr, rig = decode_file(path)                # rig.json of the recording: row start in the file, mount orientation
         # colour first: rgb = working stream (soft deglare), rgb_orig = plain S0.
         # a recorder-made rgb/rgb_orig (the shipped dataset) is never overwritten
         for sub, fn in (("rgb", fr.color_work), ("rgb_orig", fr.color_recorder)):
             out = SCENE / sub / f"{stem}.jpg"
             if not out.exists():
                 out.parent.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(out), fn(), JPG)
-        P = products(fr)
+                cv2.imwrite(str(out), orient(fn(), rig), JPG)
+        P = products(fr, roll_deg=rig["roll"])
         for k in PRODUCTS:
             d = SCENE / "layers" / k
             d.mkdir(parents=True, exist_ok=True)
             if not (d / f"{stem}.jpg").exists():
-                cv2.imwrite(str(d / f"{stem}.jpg"), P[k], [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                cv2.imwrite(str(d / f"{stem}.jpg"), orient(P[k], rig), [int(cv2.IMWRITE_JPEG_QUALITY), 90])
         return stem, None
     except Exception as e:
         return stem, repr(e)

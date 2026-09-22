@@ -46,6 +46,16 @@ import cv2
 # camera (no vector rotation). products(..., roll_deg=...) overrides per call.
 CAMERA_ROLL_DEG = -90.0
 
+# Every image the pipeline stores is shown as rot90(stored, 3) (the 07.08 rig: camera rolled -90, stored = sensor).
+# Another mount stores its frames pre-rotated so that the same display rule gives an upright picture: a recording can
+# carry rig.json next to its raw frames (monocars/import_rig.py writes it), per camera letter:
+#   {"A": {"upright_k": 2}, "B": {"upright_k": 2}}
+#   upright_k  np.rot90 quarter turns that make the raw sensor image upright: 3 = the 07.08 rig, 2 = the 18.09 rig
+#              (landscape, sensor upside down: session.json pipeline_rotation_deg 180).
+# The raw itself is never rotated (that would swap the colour and polarizer phases): only the decoded images.
+RIG_DEFAULT = {"upright_k": 3}
+_RIG_CACHE = {}
+
 W_RAW, H_RAW, STRIDE = 2448, 2048, 3680
 ANGLE_POS = {90: (0, 0), 45: (0, 1), 135: (1, 0), 0: (1, 1)}     # Sony native
 BAYER = cv2.COLOR_BayerBG2BGR
@@ -63,6 +73,39 @@ def unpack_raw12(buf):
     img[:, 0::2] = (b[:, :, 0] << 4) | (b[:, :, 2] & 0x0F)
     img[:, 1::2] = (b[:, :, 1] << 4) | (b[:, :, 2] >> 4)
     return img
+
+
+def rig_for(raw_path):
+    """rig settings of a raw frame: rig.json next to it, by the frame's camera letter; RIG_DEFAULT otherwise.
+    Adds k_store (quarter turns applied to every stored image) and roll (degrees, for the normal vectors)."""
+    from pathlib import Path
+    import json
+    p = Path(raw_path)
+    folder = str(p.parent)
+    if folder not in _RIG_CACHE:
+        f = p.parent / "rig.json"
+        try:
+            _RIG_CACHE[folder] = json.loads(f.read_text()) if f.exists() else {}
+        except Exception:
+            _RIG_CACHE[folder] = {}
+    cam = p.name.split("_", 1)[0] if "_" in p.name else ""
+    rig = dict(RIG_DEFAULT, **(_RIG_CACHE[folder].get(cam) or {}))
+    k = int(rig["upright_k"]) % 4
+    rig["k_store"] = (k + 1) % 4                        # stored = rot90(sensor, k_store), shown = rot90(stored, 3)
+    rig["roll"] = float(((90 * k + 180) % 360) - 180)  # 07.08 rig: k 3 -> -90; 18.09 rig: k 2 -> -180
+    return rig
+
+
+def decode_file(raw_path):
+    """(PolarFrame, rig) of a raw file on disk"""
+    from pathlib import Path
+    return PolarFrame(Path(raw_path).read_bytes()), rig_for(raw_path)
+
+
+def orient(img, rig):
+    """a sensor-orientation image -> the orientation the pipeline stores (see RIG_DEFAULT)"""
+    k = int(rig.get("k_store", 0)) % 4
+    return np.ascontiguousarray(np.rot90(img, k)) if k else img
 
 
 def _lum16(bgr16):
