@@ -21,15 +21,34 @@ from pathlib import Path
 
 # WebGL2 for the map and object viewers: Chromium refuses it on a GPU it does not trust -- a laptop whose desktop runs
 # on software GL (llvmpipe: an Intel iGPU newer than the Mesa of the distro) gets no WebGL at all without this flag.
+# On such a desktop the GPU compositor of Chromium draws black; WebGL itself works, so compositing goes to software.
+
+
+def _software_gl():
+    """True when the desktop OpenGL is a software rasterizer (llvmpipe): the Chromium GPU compositor then draws black.
+    NAST_SOFT_GL=1/0 overrides the check."""
+    v = os.environ.get("NAST_SOFT_GL")
+    if v in ("0", "1"):
+        return v == "1"
+    try:
+        out = subprocess.run(["glxinfo", "-B"], capture_output=True, text=True, timeout=8).stdout
+        return any(w in out for w in ("llvmpipe", "softpipe", "Software Rasterizer"))
+    except Exception:
+        return False
+
+
 _flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
 if "--ignore-gpu-blocklist" not in _flags:
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (_flags + " --ignore-gpu-blocklist").strip()
+    _flags += " --ignore-gpu-blocklist"
+if sys.platform.startswith("linux") and "--disable-gpu-compositing" not in _flags and _software_gl():
+    _flags += " --disable-gpu-compositing"
+os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _flags.strip()
 
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QUrl
 from PySide6.QtGui import (QAction, QColor, QGuiApplication, QImage, QPainter,
                            QPainterPath, QPen, QPixmap, QTransform)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame,
-                               QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                               QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPushButton, QScrollArea, QSizePolicy, QSlider,
                                QStackedWidget, QVBoxLayout, QWidget)
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -86,7 +105,9 @@ def api_post(path, payload, timeout=120):
 
 def api_delete(path):
     req = urllib.request.Request(API + path, method="DELETE")
-    urllib.request.urlopen(req, timeout=30).read()
+    with urllib.request.urlopen(req, timeout=30) as r:
+        body = r.read().decode() or "{}"
+    return json.loads(body)
 
 
 def eyebrow(text):
@@ -389,8 +410,13 @@ class Deskview(QMainWindow):
         self.btn_auto = QPushButton("Auto views"); self.btn_auto.clicked.connect(self.auto_views)
         self.btn_rec = QPushButton("Reconstruct →"); self.btn_rec.setObjectName("accent")
         self.btn_rec.clicked.connect(self.reconstruct)
-        ov.addWidget(self.btn_addobs); ov.addWidget(self.btn_auto); ov.addWidget(self.btn_rec)
-        ov.addSpacing(6); ov.addWidget(QLabel("Jobs"))
+        self.btn_del = QPushButton("Delete object"); self.btn_del.clicked.connect(self.delete_obj)
+        ov.addWidget(self.btn_addobs); ov.addWidget(self.btn_auto); ov.addWidget(self.btn_rec); ov.addWidget(self.btn_del)
+        ov.addSpacing(6)
+        jh = QHBoxLayout(); jh.addWidget(QLabel("Jobs")); jh.addStretch(1)
+        bc = QPushButton("Clear"); bc.setFixedHeight(24); bc.setToolTip("Remove finished jobs from this list (results stay)")
+        bc.clicked.connect(self.clear_jobs); jh.addWidget(bc)
+        ov.addLayout(jh)
         self.jobs_box = QVBoxLayout(); self.jobs_box.setSpacing(4)
         jw = QWidget(); jw.setLayout(self.jobs_box)
         js = QScrollArea(); js.setWidgetResizable(True); js.setWidget(jw)
@@ -411,14 +437,14 @@ class Deskview(QMainWindow):
         bh.addWidget(self.cmb_scene); bh.addWidget(b)
         bh.addSpacing(22); bh.addWidget(eyebrow("new recording")); bh.addSpacing(6)
         pb = QPushButton("poses")
-        pb.setToolTip("camera poses of the opened recording (local VGGT chain, ~1 min per 300 frames; needs decode + depth done). "
+        pb.setToolTip("camera poses of the opened recording (about 1 min per 300 frames; needs the decode and the depth finished). "
                       "Objects and the map build need them; 'build map' runs this by itself when they are missing.")
         pb.clicked.connect(self.build_poses)
         bh.addWidget(pb)
         bh.addSpacing(14); bh.addWidget(eyebrow("build map")); bh.addSpacing(6)
         for cams in ("A", "B", "AB"):
             mb = QPushButton(cams if cams != "AB" else "A + B")
-            mb.setToolTip(f"rebuild the street point cloud from camera {cams} (local VGGT, ~10 min/camera)")
+            mb.setToolTip(f"build the map of this recording from camera {cams}")
             mb.clicked.connect(lambda _, c=cams: self.build_map(c))
             bh.addWidget(mb)
         self.lbl_map = QLabel(""); self.lbl_map.setObjectName("mono")
@@ -734,9 +760,31 @@ class Deskview(QMainWindow):
         except Exception as ex:
             self.toast(str(ex), bad=True)
 
+    def delete_obj(self):
+        o = next((x for x in self.objects if x["id"] == self.sel), None)
+        if o is None:
+            self.toast("Select an object first", bad=True); return
+        if QMessageBox.question(self, "Delete object", f"Delete {o.get('label', 'this object')} and its models from the lists?\n"
+                                "The files stay on disk.") != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            api_delete(f"/api/objects/{self.sel}")
+            self.sel = -1; self.toast("Object deleted")
+        except Exception as ex:
+            self.toast(f"Delete failed: {ex}", bad=True)
+        self.refresh_objects(); self.poll_jobs(); self.load_renders()
+
+    def clear_jobs(self):
+        try:
+            r = api_delete("/api/jobs")
+            self.toast(f"Cleared {r.get('cleared', 0)} finished jobs")
+        except Exception as ex:
+            self.toast(f"Clear failed: {ex}", bad=True)
+        self.poll_jobs()
+
     def poll_jobs(self):
         try:
-            jobs = api_get("/api/jobs", timeout=3)
+            jobs = [j for j in api_get("/api/jobs", timeout=3) if not j.get("hidden")]
         except Exception:
             return
         while self.jobs_box.count():

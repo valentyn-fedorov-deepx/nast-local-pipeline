@@ -519,6 +519,54 @@ def db():
     return c
 
 
+_STEP_NAMES = {1: "locating the object", 2: "preparing the views", 3: "building the model", 4: "building the model",
+               5: "building the model", 6: "placing the model"}
+
+
+def job_text(j):
+    """what the operator sees for a job: progress and actionable errors, never the models or tools behind a step.
+    The full text stays in the database (GET /api/jobs?raw=1)."""
+    import re
+    kind, st, d = j.get("kind"), j.get("status"), str(j.get("detail") or "")
+    if st == "queued":
+        return "queued"
+    if st == "error":
+        m = re.search(r"depth is not complete yet \((\d+)/(\d+)\)", d)
+        if m:
+            return f"depth is not ready yet ({m.group(1)}/{m.group(2)}): start again when the header shows depth {m.group(2)}/{m.group(2)}"
+        for key, text in (("no decoded frames", "the recording is not decoded yet: open its folder and wait for the decode"),
+                          ("no camera poses", "this recording has no camera poses yet: MAP tab, 'poses'"),
+                          ("no camera sees this box", "no frame shows this object: draw it again"),
+                          ("has no 3D pose", "the object has no 3D position: draw it again"),
+                          ("no frame produced a crop", "no usable view of this object: draw it again or add views"),
+                          ("too small", "the object is too small in the frames: draw it where it is bigger"),
+                          ("no base map", "build the map first"),
+                          ("map points inside the box", "too few map points around the object: add views or rebuild the map"),
+                          ("interrupted by server restart", "interrupted: the service was restarted")):
+            if key in d:
+                return text
+        what = {"poses": "camera poses", "map": "map build", "reconstruct": "reconstruction"}.get(kind, "job")
+        return f"{what} failed (details in the service log)"
+    if kind == "poses":
+        if st == "done":
+            m = re.search(r"ready: (\d+) frames", d)
+            extra = [p.strip() for p in d.split("·")[1:] if p.strip()]
+            return (f"camera poses ready: {m.group(1)} frames" if m else "camera poses ready") + "".join(f" · {p}" for p in extra)
+        m = re.search(r"(\d+)/(\d+)", d)
+        return f"camera poses · {min(99, int(100 * int(m.group(1)) / max(int(m.group(2)), 1)))} %" if m else "camera poses · working"
+    if kind == "map":
+        if st == "done":
+            return "map ready"
+        m = re.search(r"\b(\d)/(\d)\b", d)
+        return f"building the map · step {m.group(1)}/{m.group(2)}" if m else "building the map"
+    if kind == "reconstruct":
+        if st == "done":
+            return "model ready"
+        m = re.search(r"\b([1-6])/6\b", d)
+        return f"reconstruction · step {m.group(1)}/6 · {_STEP_NAMES[int(m.group(1))]}" if m else "reconstruction · working"
+    return st or ""
+
+
 def init_db():
     c = db()
     c.executescript("""
@@ -533,7 +581,8 @@ def init_db():
     """)
     for ddl in ("ALTER TABLE objects ADD COLUMN pose TEXT",
                 "ALTER TABLE objects ADD COLUMN obs TEXT",
-                "ALTER TABLE objects ADD COLUMN dataset TEXT"):
+                "ALTER TABLE objects ADD COLUMN dataset TEXT",
+                "ALTER TABLE jobs ADD COLUMN hidden INTEGER DEFAULT 0"):
         try:
             c.execute(ddl)
         except sqlite3.OperationalError:
@@ -888,6 +937,18 @@ def angdiff(a, b):
     return min(d, 2 * np.pi - d)
 
 
+def frame_time(name):
+    """seconds of the timestamp in a frame name (..._HH_MM_SS_micro...), None without one"""
+    import re
+    m = re.search(r"_(\d{2})_(\d{2})_(\d{2})_(\d{6})(?:_|\.|$)", name)
+    return None if not m else int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) + int(m.group(4)) / 1e6
+
+
+SMALL_OBJECT_M = 2.0          # below this size a pose error of a few decimetres already misses the object in a far view
+THIN_OBJECT_M = 0.8           # ... and so it does for a tall thin thing (a pole, a sign): its second dimension
+LOCAL_VIEW_S = 8.0            # small objects: extra views only from the same camera within this many seconds
+
+
 def auto_views(obj, n=8, exclude_near=3, min_span=36):
     """Propagate the operator's ROI to other frames by GEOMETRY: project the
     object's world points into every camera pose, keep frames where it is
@@ -960,11 +1021,26 @@ def auto_views(obj, n=8, exclude_near=3, min_span=36):
     own = [depth_vis(frames[i]) for i, _ in used if i >= 0]
     own = [v for v in own if v is not None]
     use_depth = bool(own) and float(np.mean(own)) >= 0.5
+    # small objects (a lamp head, a sign): the poses are exact only locally (decimetres over the whole drive), so their
+    # extra views come from the same camera close in time to the operator's own views, never from another pass
+    try:
+        ps = obj.get("pose"); ps = json.loads(ps) if isinstance(ps, str) else (ps or {})
+        dims = sorted((float(v) for v in (ps.get("size") or [obj.get("sx"), obj.get("sy"), obj.get("sz")])), reverse=True)
+    except Exception:
+        dims = sorted((float(obj.get(k) or 0) for k in ("sx", "sy", "sz")), reverse=True)
+    dims = [d * WORLD_UNIT_M for d in dims]
+    small = dims[0] < SMALL_OBJECT_M or dims[1] < THIN_OBJECT_M          # a lamp head, a person, or a pole / a sign
+    man_t = [(ob["frame"][:1], frame_time(ob["frame"])) for ob in obs if not ob.get("auto")]
+    man_t = [(c, t) for c, t in man_t if t is not None]
     cands = []
     for i, f in enumerate(frames):
         cam = f["name"][:1]
         if any(c == cam and abs(i - j) <= exclude_near for j, c in used):
             continue
+        if small and man_t:
+            tf = frame_time(f["name"])
+            if tf is None or not any(c == cam and abs(tf - t) <= LOCAL_VIEW_S for c, t in man_t):
+                continue
         ux, uy, sx, sy, z, inside = project_upright(P, f)
         if inside.mean() < 0.97:
             continue
@@ -1013,8 +1089,9 @@ def auto_views(obj, n=8, exclude_near=3, min_span=36):
             kept = []
             for c in cands:
                 # a big object, or another side of it (the rear camera after the pass, the other direction of the
-                # drive): the operator's template says nothing there, the geometry alone decides
-                if c["span"] >= 140 or (mb is not None and angdiff(c["bearing"], mb) > np.radians(35)):
+                # drive): the operator's template says nothing there, the geometry alone decides. A small object is
+                # always checked: a pose error of its own size puts the rect on the wall behind it
+                if not small and (c["span"] >= 140 or (mb is not None and angdiff(c["bearing"], mb) > np.radians(35))):
                     kept.append(c); continue
                 sc_ = c["span"] / mspan
                 th, tw = max(8, int(templ0.shape[0] * sc_)), max(8, int(templ0.shape[1] * sc_))
@@ -1864,6 +1941,11 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, build_map())
         if p == "/api/jobs":
             c = db(); rows = [dict(r) for r in c.execute("SELECT * FROM jobs ORDER BY id DESC").fetchall()]; c.close()
+            if "raw=1" not in (u.query or ""):
+                for r in rows:
+                    raw = str(r.get("detail") or "")
+                    r["url"] = raw if raw.startswith("/") else None
+                    r["detail"] = job_text(r)
             return self._send(200, rows)
         if p == "/api/dataset":
             total, done = decode_counts()
@@ -1951,7 +2033,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"job_id": jid})
         if p == "/api/build_poses":
             if not LOCAL_ONLY:
-                return self._send(422, {"error": "poses are computed on the local GPU (NAST_LOCAL=1)"})
+                return self._send(422, {"error": "camera poses are not available in this setup"})
             return self._send(200, {"job_id": enqueue_poses()})
         if p == "/api/build_map":
             b = self._body()
@@ -2050,8 +2132,14 @@ class H(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if p.startswith("/api/objects/"):
             oid = int(p.rsplit("/", 1)[1])
-            c = db(); c.execute("DELETE FROM objects WHERE id=?", (oid,)); c.commit(); c.close()
+            c = db(); c.execute("DELETE FROM objects WHERE id=?", (oid,))
+            c.execute("UPDATE jobs SET hidden=1 WHERE object_id=? AND status IN ('done','error')", (oid,))    # files stay on disk
+            c.commit(); c.close()
             return self._send(200, {"ok": True})
+        if p == "/api/jobs":
+            c = db(); n = c.execute("UPDATE jobs SET hidden=1 WHERE status IN ('done','error') AND COALESCE(hidden,0)=0").rowcount
+            c.commit(); c.close()
+            return self._send(200, {"cleared": n})
         return self._send(404, {"error": "no route"})
 
 
