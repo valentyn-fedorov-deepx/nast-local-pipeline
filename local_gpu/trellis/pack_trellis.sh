@@ -15,8 +15,10 @@ ROOT="$1"; OUT="$2"
 ENV="$ROOT/miniconda3/envs/trellis"
 # the linker/JIT need a REAL libcudart.so inside the env (a symlink may point outside)
 for n in libcudart.so libcudart.so.12; do
-  t=$(readlink -e "$ENV/lib/$n" 2>/dev/null || true)
-  if [ -n "$t" ] && [ "$t" != "$ENV/lib/$n" ]; then rm -f "$ENV/lib/$n"; cp "$t" "$ENV/lib/$n"; fi
+  if [ -L "$ENV/lib/$n" ]; then                  # only a symlink is replaced (an earlier pack may have made it a real file already)
+    t=$(readlink -e "$ENV/lib/$n" 2>/dev/null || true)
+    [ -n "$t" ] && { rm -f "$ENV/lib/$n"; cp "$t" "$ENV/lib/$n"; }
+  fi
 done
 "$ENV/bin/python" -m pip install -q conda-pack
 PACKDIR="${NAST_PACK_TMP:-$ROOT/pack}"
