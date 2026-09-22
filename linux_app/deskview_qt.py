@@ -19,6 +19,12 @@ import time
 import urllib.request
 from pathlib import Path
 
+# WebGL2 for the map and object viewers: Chromium refuses it on a GPU it does not trust -- a laptop whose desktop runs
+# on software GL (llvmpipe: an Intel iGPU newer than the Mesa of the distro) gets no WebGL at all without this flag.
+_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+if "--ignore-gpu-blocklist" not in _flags:
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (_flags + " --ignore-gpu-blocklist").strip()
+
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QUrl
 from PySide6.QtGui import (QAction, QColor, QGuiApplication, QImage, QPainter,
                            QPainterPath, QPen, QPixmap, QTransform)
