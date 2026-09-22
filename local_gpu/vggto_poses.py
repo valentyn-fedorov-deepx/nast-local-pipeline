@@ -10,6 +10,8 @@ smears one parked car into several. So the geometry comes from VGGT alone, MoGe 
      small least-squares problem over log lam. H, the camera height in world units, is the only number MoGe gives: baselines
      triangulated from SIFT matches against the MoGe depth, median over the recording.
   3. The reference camera (longest track): chunks chained by the shared cameras (rotation average + centres).
+     Which way a camera looks (forward / backward along the drive) is read off the same data: the sign of the driving direction
+     along its optical axis. Nothing tells the pipeline which prefix is the front camera, and nothing needs to.
   4. Every other camera of the rig is NOT chained on its own. The rig is rigid: its pose is the reference camera's pose at the same
      timestamp times a constant transform. Rotation of that transform: the road normal and the driving direction as both cameras
      see them at the same moments. Lever arm: zero (a back-to-back unit; NAST_RIG_LEVER for another rig). Every chunk of that
@@ -533,8 +535,14 @@ for pre, cam in cams.items():
     for k, ch in enumerate(cam["chunks"]):
         ground_of(ch, pre, k, upax, rs)
     good = [ch for ch in cam["chunks"] if ch["gq"] > 0]
-    print(f"{tag}: road plane in {len(good)}/{len(cam['chunks'])} chunks ({time.time() - t0:.0f}s), up = camera {axis} by {how}", flush=True)
-    cam.update(up_axis=axis, up_how=how, upax=upax)
+    vec = camera_vectors(cam["chunks"])                            # the drive as this camera sees it
+    looks, vz = "unknown (the rig never moved over a visible road)", float("nan")
+    if vec is not None and len(vec["v"][0]) >= 10:
+        vm = unit(np.median(vec["v"][1], 0)); vz = float(vm[2])
+        looks = "forward" if vz > 0.5 else "backward" if vz < -0.5 else "sideways"
+    print(f"{tag}: road plane in {len(good)}/{len(cam['chunks'])} chunks ({time.time() - t0:.0f}s), up = camera {axis} by {how}; looks {looks}"
+          + (f" (driving direction along its optical axis {vz:+.2f})" if np.isfinite(vz) else ""), flush=True)
+    cam.update(up_axis=axis, up_how=how, upax=upax, vec=vec, looks=looks, looks_z=vz)
 
 cam = cams[ref]; chunks = cam["chunks"]; tag = f"camera '{ref or 'single'}'"
 meas, npts = moge_scales(chunks, tag)
@@ -551,7 +559,7 @@ print(f"{tag}: path {cam['path_len']:.1f}, chunks {len(chunks)}, camera height {
 # ------------------------------------------------------------------------------------------------ the other cameras follow the rig
 reg = {}
 ta = [ts_of(n) for n in nm]
-vec_ref = camera_vectors(chunks)
+vec_ref = cam["vec"]
 for pre, cb in cams.items():
     if pre == ref:
         continue
@@ -559,7 +567,7 @@ for pre, cb in cams.items():
     tb_all = {n: ts_of(n) for ch in chb for n in ch["names"]}
     if any(v is None for v in ta) or any(v is None for v in tb_all.values()):
         print(f"{tagb}: no timestamps in the names - cannot be tied to the rig, left out", flush=True); continue
-    rr = rig_rotation(vec_ref, camera_vectors(chb))
+    rr = rig_rotation(vec_ref, cb["vec"]) if vec_ref is not None and cb["vec"] is not None else None
     if rr is None:
         print(f"{tagb}: the rig never moved over a visible road while both cameras ran - cannot be tied to '{ref}', left out", flush=True); continue
     RX = rr[0]                                                      # reference camera frame -> this camera frame
@@ -721,6 +729,7 @@ for pre, cam in cams.items():
 report = {"frames": len(frames), "seconds": round(time.time() - t_all), "chunk": CHUNK, "overlap": OVER, "res": RES, "units": meta["units"], "reference_camera": ref or "single",
           "camera_height_world": round(Hw, 4), "camera_height_moge_spread": None if not np.isfinite(spread) else round(spread, 3),
           "cameras": {pre or "single": {"frames": len(c.get("names", [])), "path_len": round(c.get("path_len", 0.0), 2), "up_axis": c["up_axis"], "up_by": c["up_how"],
+                                        "looks": c["looks"], "drive_along_optical_axis": None if not np.isfinite(c["looks_z"]) else round(c["looks_z"], 3),
                                         "time_holes": holes.get(pre, 0), "chunks": len(c["chunks"]), "chunks_with_road_plane": int(sum(ch["gq"] > 0 for ch in c["chunks"])),
                                         "scale_min_max": [round(float(np.min(c["lam"])), 4), round(float(np.max(c["lam"])), 4)] if "lam" in c else None,
                                         "vggt_fx_median": round(float(np.median([ch["fx"] for ch in c["chunks"]])), 1),

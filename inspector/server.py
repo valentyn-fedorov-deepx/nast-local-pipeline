@@ -1140,10 +1140,17 @@ def run_poses_stage(upd, prefix=""):
     with LOCK:
         load_scene()
     POSES_NOTE[0] = ""
+    try:                                                  # which way each camera looks, read off the drive itself
+        rp = json.loads((CLOUD_DIR / "poses_report.json").read_text())
+        looks = ", ".join(f"{k.rstrip('_')} looks {v['looks']}" for k, v in rp["cameras"].items() if v.get("looks"))
+        if looks:
+            POSES_NOTE[0] = " · " + looks
+    except Exception:
+        pass
     if again:                                             # a recomputed track is a new world: what was solved in the old one stays there
         c = db(); n_obj = c.execute("SELECT COUNT(*) FROM objects WHERE COALESCE(dataset,'')=?", (dataset_key(),)).fetchone()[0]; c.close()
         if n_obj:
-            POSES_NOTE[0] = f" · {n_obj} object(s) were solved on the previous poses and sit in the old world: solve them again"
+            POSES_NOTE[0] += f" · {n_obj} object(s) were solved on the previous poses and sit in the old world: solve them again"
     return len(STATE["poses"]["frames"])
 
 
