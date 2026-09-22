@@ -113,7 +113,11 @@ It creates a conda env `trellis` (installs miniconda under the root when
 there is none), clones microsoft/TRELLIS, builds its CUDA extensions with a
 conda-provided nvcc (no system CUDA toolkit needed), downloads the weights
 (TRELLIS-image-large, SAM ViT-H, Real-ESRGAN x4, DINOv2) into its own caches,
-and ends with a real generation on a sample crop. Pins are chosen by the GPU:
+and ends with a real generation on a sample crop. A finished install travels:
+`pack_trellis.sh` makes one relocatable archive of the env (`unpack_trellis.sh`
+installs it on a machine of the same GPU generation, no compiler, no conda) and
+`pack_weights.sh` a bundle of the weights it uses; with `nast_weights.tar` next
+to the archive the unpack downloads nothing. Pins are chosen by the GPU:
 Ampere/Ada (RTX 30xx/40xx, A-series) → torch 2.4.0+cu121; Blackwell
 (RTX 50xx) → torch 2.7.0+cu128. Success writes `<root>/env_ok`; from then on
 stage 4/6 of every reconstruction runs SAM + Real-ESRGAN + TRELLIS locally
