@@ -82,8 +82,13 @@ data (poses from `inspector/scene_base`) so a fresh clone opens fine.
 The shipped street scene carries COLMAP poses. A fresh take has none, and the ROI
 solve, the object views and the map build all need a pose per frame. The route:
 
-1. **Open data folder**: the folder with the `.raw12` frames. Decode (rgb, rgb_orig,
-   the normals catalog) and the MoGe-2 depth pass start by themselves.
+1. **Open data folder**: the folder with the `.raw12` / `.raw` frames of BOTH cameras,
+   named `A_<timestamp>...` and `B_<timestamp>...`: the first letter is the camera,
+   everywhere in the pipeline. The Orthovector units write bare timestamps into a
+   folder per unit, so first `python monocars/import_rig.py <out> <unit 1 folder>
+   <unit 2 folder>` links them into one folder with the letters (hard links, no
+   copy; searches the unit folders recursively, keeps their session.json). Decode
+   (rgb, rgb_orig, the normals catalog) and the MoGe-2 depth pass start by themselves.
 2. MAP tab, **poses**: `local_gpu/vggto_poses.py` on the local GPU, about 25 s per
    100 frames. It makes the camera poses AND the depth the rest of the pipeline
    unprojects (`<recording>/depth_geo/`, same 16-bit format as the MoGe dump, with
