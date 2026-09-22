@@ -140,6 +140,79 @@ def trellis_root():
                 str(Path.home() / "nast_trellis"))
 
 
+_TRELLIS_WSL = {}
+
+
+def wsl_path(p):
+    """C:\\a\\b -> /mnt/c/a/b (how WSL sees a Windows path; symlinks resolved first)"""
+    p = Path(p).resolve()
+    return "/mnt/" + p.drive[0].lower() + p.as_posix()[2:]
+
+
+def trellis_worker(wd):
+    """(command, env, where) that runs local_gpu/trellis/trellis_local.sh on the job folder with this machine's GPU:
+    the env next to the repo (install_trellis.sh / unpack_trellis.sh wrote its env_ok), or on a Windows box the same env
+    inside a WSL distro (NAST_TRELLIS_WSL=<distro>, default the first one that has it; NAST_TRELLIS_ROOT_WSL, default
+    ~/nast_trellis there). None when there is no TRELLIS anywhere."""
+    worker = LOCAL_GPU / "trellis" / "trellis_local.sh"
+    if not worker.exists():
+        return None
+    troot = trellis_root()
+    if (troot / "env_ok").exists():
+        env2 = dict(os.environ); env2["NAST_TRELLIS_ROOT"] = str(troot)
+        return ["bash", str(worker), str(wd)], env2, "the local GPU"
+    if os.name != "nt":
+        return None
+    if "distro" not in _TRELLIS_WSL:
+        _TRELLIS_WSL["distro"] = None
+        root = os.environ.get("NAST_TRELLIS_ROOT_WSL", "$HOME/nast_trellis")
+        want = os.environ.get("NAST_TRELLIS_WSL", "")
+        try:
+            r = subprocess.run(["wsl", "-l", "-q"], capture_output=True, timeout=30)
+            names = [n.strip() for n in r.stdout.decode("utf-16-le", "ignore").replace("\x00", "").splitlines() if n.strip()]
+        except Exception:
+            names = []
+        for d in ([want] if want else [n for n in names if "docker" not in n.lower()]):
+            try:
+                r = subprocess.run(["wsl", "-d", d, "--", "bash", "-lc", f"test -f {root}/env_ok && echo NAST_OK"],
+                                   capture_output=True, text=True, timeout=120)
+                if "NAST_OK" in (r.stdout or ""):
+                    _TRELLIS_WSL.update(distro=d, root=root)
+                    break
+            except Exception:
+                pass
+        print("TRELLIS env in WSL:", _TRELLIS_WSL["distro"] or "none", flush=True)
+    if not _TRELLIS_WSL["distro"]:
+        return None
+    root = _TRELLIS_WSL["root"]
+    # the install's own caches when it made them, else the env's default ones (a hand-made WSL env)
+    pre = (f"export NAST_TRELLIS_ROOT={root}; [ -d {root}/cache/hf/hub ] || export HF_HOME=$HOME/.cache/huggingface; "
+           f"[ -d {root}/cache/torch/hub ] || export TORCH_HOME=$HOME/.cache/torch; ")
+    cmd = ["wsl", "-d", _TRELLIS_WSL["distro"], "--", "bash", "-lc", pre + f"bash {wsl_path(worker)} {wsl_path(wd)}"]
+    return cmd, None, f"the local GPU (WSL {_TRELLIS_WSL['distro']})"
+
+
+def run_logged(cmd, log_path, upd, prefix, env=None, timeout=3600):
+    """run a worker, keep its whole output in log_path, mirror its milestone lines into the job detail"""
+    marks = ("SAM loaded", "SAM score", "max views", "kept", "inputs:", "[cond]", "[sparse structure]", "[slat]", "[decode",
+             "out of memory", "mesh:", "TRELLIS_GEN_DONE", "ENHANCE_EMPTY", "Error", "error", "skipped")
+    t0 = time.time(); tail = []
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                errors="replace", env=env)
+        for line in proc.stdout:
+            log.write(line); log.flush()
+            s_ = line.strip(); tail = (tail + [s_])[-8:] if s_ else tail
+            if s_ and any(m in s_ for m in marks):
+                upd("running", f"{prefix}{s_[:150]}")
+            if time.time() - t0 > timeout:
+                proc.kill()
+                raise RuntimeError(f"the TRELLIS worker timed out after {timeout} s")
+        proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"TRELLIS worker rc={proc.returncode}: " + " | ".join(tail[-4:])[-500:])
+
+
 def moge_python():
     """an interpreter that imports MoGe-2: the TRELLIS env (add_moge.sh) first,
     then this service's own python; None -> no local depth"""
@@ -791,7 +864,19 @@ def sam_hints(frame_name, P, rect, n_pos=8, n_neg=8):
     return pos, neg
 
 
-def auto_views(obj, n=5, exclude_near=4, min_span=36):
+def horiz_axes(up):
+    """two horizontal axes for bearings around an object (only differences of bearings matter)"""
+    ref = np.array([0, 1, 0]) if abs(up[1]) < 0.9 else np.array([1, 0, 0])
+    wx = np.cross(ref, up); wx /= np.linalg.norm(wx)
+    return wx, np.cross(up, wx)
+
+
+def angdiff(a, b):
+    d = abs(a - b) % (2 * np.pi)
+    return min(d, 2 * np.pi - d)
+
+
+def auto_views(obj, n=8, exclude_near=3, min_span=36):
     """Propagate the operator's ROI to other frames by GEOMETRY: project the
     object's world points into every camera pose, keep frames where it is
     fully in view, big enough and not occluded (MoGe depth agrees with the
@@ -833,8 +918,7 @@ def auto_views(obj, n=5, exclude_near=4, min_span=36):
     except Exception:
         corners = None
     up = world_up()
-    ref = np.array([0, 1, 0]) if abs(up[1]) < 0.9 else np.array([1, 0, 0])
-    wx = np.cross(ref, up); wx /= np.linalg.norm(wx); wz = np.cross(up, wx)
+    wx, wz = horiz_axes(up)
     ctr = P.mean(0)
 
     def bearing(C):
@@ -881,7 +965,7 @@ def auto_views(obj, n=5, exclude_near=4, min_span=36):
         span = float(max(x1 - x0, y1 - y0))
         if span < min_span:
             continue
-        pad = max(12.0, 0.12 * span)                              # room for the unseen side of the object
+        pad = max(4.0, 0.04 * span)                               # the object must be whole in the frame; the biggest views sit near its edge
         if x0 < pad or y0 < pad or x1 > Hs - 1 - pad or y1 > Ws - 1 - pad:   # upright frame: Hs wide, Ws tall
             continue
         vis = 0.5
@@ -913,9 +997,12 @@ def auto_views(obj, n=5, exclude_near=4, min_span=36):
             mup = cv2.cvtColor(np.rot90(mimg, k=3).copy(), cv2.COLOR_BGR2GRAY)
             mm = int(0.08 * mspan)
             templ0 = mup[max(0, my0 - mm):my1 + mm, max(0, mx0 - mm):mx1 + mm]
+            mb = bearing(np.array(frames[idx_of[mo["frame"]]]["p"])) if mo["frame"] in idx_of else None
             kept = []
             for c in cands:
-                if c["span"] >= 140:
+                # a big object, or another side of it (the rear camera after the pass, the other direction of the
+                # drive): the operator's template says nothing there, the geometry alone decides
+                if c["span"] >= 140 or (mb is not None and angdiff(c["bearing"], mb) > np.radians(35)):
                     kept.append(c); continue
                 sc_ = c["span"] / mspan
                 th, tw = max(8, int(templ0.shape[0] * sc_)), max(8, int(templ0.shape[1] * sc_))
@@ -946,15 +1033,11 @@ def auto_views(obj, n=5, exclude_near=4, min_span=36):
             print("view verify skipped:", e, flush=True)
     chosen = []
 
-    def angdiff(a, b):
-        d = abs(a - b) % (2 * np.pi)
-        return min(d, 2 * np.pi - d)
-
     while cands and len(chosen) < n:
         def score(c):
             ref_b = have + [k["bearing"] for k in chosen]
             div = min([angdiff(c["bearing"], b) for b in ref_b]) if ref_b else np.pi
-            return (min(np.degrees(div) / 30.0, 1.5)
+            return (min(np.degrees(div) / 40.0, 1.5)                    # a new side of the object first, then size and visibility
                     + 0.25 * np.log2(max(c["span"] / min_span, 1.0)) + 0.5 * c["vis"])
         best = max(cands, key=score)
         chosen.append(best)
@@ -967,7 +1050,7 @@ def auto_views(obj, n=5, exclude_near=4, min_span=36):
                     "pts": [[int(max(0, x0 - m)), int(max(0, y0 - m))],
                             [int(min(Hs - 1, x1 + m)), int(min(Ws - 1, y1 + m))]],
                     "auto": True, "span": round(c["span"], 1), "vis": round(c["vis"], 2),
-                    "ncc": c.get("ncc")})
+                    "ncc": c.get("ncc"), "bearing_deg": round(float(np.degrees(c["bearing"])), 1)})
     return out
 
 
@@ -1391,6 +1474,8 @@ def roi_crop(ob, out_path, margin=0.10, min_side=384, force_lean=None):
         return out
     if ob.get("pos"):
         side["pos"] = to_crop(ob["pos"]); side["neg"] = to_crop(ob.get("neg"))
+    if ob.get("bearing_deg") is not None:
+        side["bearing"] = float(ob["bearing_deg"])
     out_path.with_suffix(".box.json").write_text(json.dumps(side))
     return out_path, native, lean_used, False
 
@@ -1447,8 +1532,14 @@ def run_reconstruct(jid, obj):
         # operator views first, auto-collected views after; SAM prompt hints
         # (object points + depth-disagreeing background) ride along per view
         obs_list = [ob for ob in obs_list if not ob.get("auto")] + [ob for ob in obs_list if ob.get("auto")]
-        obs_list = obs_list[:8]
+        obs_list = obs_list[:10]
         P_obj = object_world_points(obs_list)
+        upw = world_up(); wx_, wz_ = horiz_axes(upw)
+        for ob in obs_list:                                   # where each view stands around the object: the worker keeps the sides apart
+            fr = by_name.get(ob.get("frame"))
+            if fr is not None:
+                v = np.array(fr["p"]) - ctr; v = v - upw * (v @ upw)
+                ob["bearing_deg"] = round(float(np.degrees(np.arctan2(v @ wz_, v @ wx_))), 1) if np.linalg.norm(v) > 1e-6 else None
         for ob in obs_list:
             try:
                 poly0 = np.array(roi_to_polygon(ob["kind"], ob["pts"]), dtype=np.float64)
@@ -1528,24 +1619,19 @@ def run_reconstruct(jid, obj):
             raise RuntimeError("no frame produced a crop")
 
         if LOCAL_ONLY:
-            # TRELLIS on this machine's GPU when local_gpu/trellis/install_trellis.sh
-            # has finished (its env_ok marker); otherwise the points-only asset
-            worker = LOCAL_GPU / "trellis" / "trellis_local.sh"
-            root_file = LOCAL_GPU / "trellis" / "ROOT"          # written by install_trellis.sh
-            troot = Path(os.environ.get("NAST_TRELLIS_ROOT") or
-                         (root_file.read_text().strip() if root_file.exists() else "") or
-                         str(Path.home() / "nast_trellis"))
-            if TRELLIS_LOCAL and crops and worker.exists() and (troot / "env_ok").exists():
+            # TRELLIS on this machine's GPU (the env of install/unpack_trellis.sh, or the same env inside WSL on a
+            # Windows box); without one the asset is the map points inside the box: honest, but a blob
+            tw = trellis_worker(wd) if TRELLIS_LOCAL and crops else None
+            if tw is not None:
+                cmd, env2, where = tw
                 with GPU_LOCK:
-                    upd("running", f"4/6 SAM + Real-ESRGAN + TRELLIS on the local GPU "
-                                   f"({len(crops)} views, ~3-5 min)")
-                    env2 = dict(os.environ); env2["NAST_TRELLIS_ROOT"] = str(troot)
-                    sh(["bash", str(worker), str(wd)], timeout=3600, env=env2)
+                    upd("running", f"4/6 SAM + Real-ESRGAN + TRELLIS on {where} ({len(crops)} views, ~3-5 min)")
+                    run_logged(cmd, wd / "trellis.log", upd, "4/6 TRELLIS · ", env2, timeout=3600)
                 if not (wd / "asset.ply").exists():
-                    raise RuntimeError("local TRELLIS produced no asset.ply — see the job log")
+                    raise RuntimeError(f"local TRELLIS produced no asset.ply — see jobs/job_{jid}/trellis.log")
             else:
                 upd("running", "3/6 local asset: map points inside the box "
-                               "(TRELLIS not installed: run local_gpu/trellis/install_trellis.sh)")
+                               "(no TRELLIS env: run local_gpu/trellis/install_trellis.sh or unpack_trellis.sh)")
                 build_point_asset(box, wd / "asset.ply")
         else:
             with GPU_LOCK:
@@ -1909,7 +1995,7 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/api/objects/") and p.endswith("/autoviews"):
             oid = int(p.split("/")[3])
             b = self._body() or {}
-            n = int(b.get("n", 5))
+            n = int(b.get("n", 8))
             c = db()
             o = c.execute("SELECT * FROM objects WHERE id=?", (oid,)).fetchone()
             if o is None:

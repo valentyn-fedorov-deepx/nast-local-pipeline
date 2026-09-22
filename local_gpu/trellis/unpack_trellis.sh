@@ -12,6 +12,9 @@ echo "--- extracting $(du -h "$ARC" | cut -f1) into $ROOT"
 tar -xf "$ARC" -C "$ROOT"
 tar -xzf "$ROOT/env.tar.gz" -C "$ROOT/env" && rm -f "$ROOT/env.tar.gz"
 "$ROOT/env/bin/python" "$ROOT/env/bin/conda-unpack"   # rewrite the prefixes for this path (its shebang wants a bare "python")
+# basicsr 1.4.2 imports a torchvision module removed in 0.17: without this line Real-ESRGAN silently falls back to Lanczos
+DEG=$("$ROOT/env/bin/python" -c "import importlib.util, os; print(os.path.join(os.path.dirname(importlib.util.find_spec('basicsr').origin), 'data', 'degradations.py'))" 2>/dev/null)
+[ -f "$DEG" ] && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEG"
 echo "$ROOT" > "$HERE/ROOT"
 echo "--- MoGe-2 (metric depth for raw imports) into the env"
 NAST_TRELLIS_ROOT="$ROOT" bash "$HERE/add_moge.sh"

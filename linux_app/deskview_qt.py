@@ -667,7 +667,7 @@ class Deskview(QMainWindow):
                 self.toast(f"✓ 3D position solved — {body.get('npts', 0):,} points")
                 self.sel = body.get("id", -1)
                 try:
-                    r = api_post(f"/api/objects/{self.sel}/autoviews", {"n": 5})
+                    r = api_post(f"/api/objects/{self.sel}/autoviews", {"n": 8})
                     k = r.get("added", 0)
                     if k:
                         self.toast(f"✓ 3D solved · {k} auto views collected")
@@ -713,7 +713,7 @@ class Deskview(QMainWindow):
         if self.sel < 0:
             return
         try:
-            r = api_post(f"/api/objects/{self.sel}/autoviews", {"n": 5})
+            r = api_post(f"/api/objects/{self.sel}/autoviews", {"n": 8})
             self.toast(f"✓ {r.get('added', 0)} auto views")
         except Exception as ex:
             self.toast(str(ex), bad=True)

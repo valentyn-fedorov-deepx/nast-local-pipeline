@@ -161,6 +161,8 @@ if os.environ.get("TRELLIS_MAX_VIEWS"):
     MAX_VIEWS = int(os.environ["TRELLIS_MAX_VIEWS"])
 elif dev == "cuda" and torch.cuda.get_device_properties(0).total_memory < 14e9:
     MAX_VIEWS = 3                                   # 12 GB cards: fewer views, no OOM
+elif dev == "cuda" and torch.cuda.get_device_properties(0).total_memory >= 24e9:
+    MAX_VIEWS = 8                                   # 24-32 GB cards: the fusion holds eight views
 else:
     MAX_VIEWS = 5
 print(f"max views: {MAX_VIEWS}", flush=True)
@@ -225,6 +227,7 @@ for p in sorted(IN.glob("*.png")):
     cands.append(dict(name=p.name, up=up, a=a, box=(x0, y0, x1, y1), how=how, orig_px=orig_px,
                       solidity=solidity, sharp=sharp, ncc=int(n_cc - 1),
                       aspect=float((x1 - x0) / max(1, y1 - y0)), fill=float(mb.mean()),
+                      bearing=(float(b["bearing"]) if b.get("bearing") is not None else None),
                       manual=p.name.startswith("roi_0") and int(p.stem.split("_")[1]) < 2))
 # ---- keep the views that agree with the set: partial masks (holes, cut
 # bodies), blurred frames and crumbs distort a multi-image TRELLIS fusion far
@@ -246,13 +249,23 @@ if cands:
         c["ok"] = ok
         c["score"] = (min(c["rel_sol"], 1.2) * min(c["rel_sharp"], 1.5) ** 0.5
                       * np.sqrt(c["orig_px"]) * (1.15 if c["manual"] else 1.0))
-    keep = sorted([c for c in cands if c["ok"]], key=lambda c: -c["score"])[:MAX_VIEWS]
+    # best view first, then the best view of a side not covered yet: eight near-duplicates of one side teach the
+    # fusion nothing that one of them does not, a view of the rear does
+    good = sorted([c for c in cands if c["ok"]], key=lambda c: -c["score"]); keep = []
+    while good and len(keep) < MAX_VIEWS:
+        def gain(c):
+            known = [k["bearing"] for k in keep if k.get("bearing") is not None]
+            if c.get("bearing") is None or not known:
+                return c["score"]
+            d = min(abs((c["bearing"] - k + 180.0) % 360.0 - 180.0) for k in known)
+            return c["score"] * (0.4 + 0.6 * min(d / 35.0, 1.0))
+        best = max(good, key=gain); keep.append(best); good.remove(best)
     if not keep:                                    # never end up with nothing: best 2 by score
         keep = sorted(cands, key=lambda c: -c["score"])[:2]
     kept_names = {c["name"] for c in keep}
     report = {c["name"]: {k: (round(float(v), 3) if isinstance(v, (int, float, np.floating)) else v)
                           for k, v in c.items() if k in ("solidity", "sharp", "ncc", "orig_px", "rel_sol",
-                                                          "rel_sharp", "ok", "score", "manual", "aspect", "fill", "shape_ok")}
+                                                          "rel_sharp", "ok", "score", "manual", "aspect", "fill", "shape_ok", "bearing")}
               for c in cands}
     for n, r in report.items():
         r["kept"] = n in kept_names

@@ -123,6 +123,15 @@ Set the same `NAST_TRELLIS_ROOT` before starting the service (`run.sh`), or
 leave the default `$HOME/nast_trellis`. `NAST_TRELLIS=0` forces the points
 route even when TRELLIS is installed.
 
+Views of an object: the operator's ROI plus up to 8 auto views spread around
+the object (both cameras, both directions of the drive; the photometric check
+against the operator's crop applies only to comparable sides). The worker
+segments every view with SAM, upscales it with Real-ESRGAN and keeps the best
+ones by quality while holding the sides apart: 3 views on cards under 14 GB,
+5 up to 24 GB, 8 above (`TRELLIS_MAX_VIEWS` overrides). Everything the worker
+printed is in `inspector/jobs/job_<id>/trellis.log`. A Windows box with the
+same env inside WSL runs it there (`NAST_TRELLIS_WSL=<distro>`; auto-detected).
+
 ## 6. Environment switches
 
 | var                     | default | meaning                                   |
