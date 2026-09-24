@@ -1,3 +1,15 @@
+<!-- English summary first; the step by step below is in Ukrainian. -->
+**What this folder is.** The kit that was carried to the demo laptop (Ubuntu 22.04, RTX 5090 Laptop, 24 GB) and installed
+there: `bootstrap.sh` pulls the 19 GB kit from Drive, checks every file against `manifest.md5` and runs
+`install_mode3_clean.sh` (system packages, the code, a venv, the prebuilt TRELLIS environment for sm_120, the weights, then a
+service self check). `nast_preflight.sh` runs before any of it and says whether the machine and the disk are up to it.
+
+**Which code is on that laptop.** The tag `laptop-5090-demo` (commit 273b58d): the kit's `nast_v3_clean_code.tar` is
+`git archive` of exactly that commit, checked file by file. Everything the kit adds on top is not in git by design: the
+VGGT-Omega weights, the TRELLIS environment and its weights. The steps below are the ones that were actually run.
+
+---
+
 # NAST Mode 3 на новий ноут (Linux, RTX 5090): перенос і розгортання
 
 ## Що переносимо (одна папка, 19 ГБ)
