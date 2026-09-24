@@ -215,7 +215,9 @@ for p in sorted(IN.glob("*.png")):
         continue
     # ---- quality of this view (judged RELATIVE to the set below) ----
     mb = (a[y0:y1, x0:x1] > 128).astype(np.uint8)
-    n_cc, cc = cv2.connectedComponents(mb)
+    n_lab, lab, stats, _ = cv2.connectedComponentsWithStats(mb, connectivity=8)
+    areas = stats[1:, cv2.CC_STAT_AREA] if n_lab > 1 else np.zeros(0)
+    n_cc = 1 + int((areas >= 0.02 * max(1, mb.sum())).sum())   # specks of mask are not pieces of the object
     cnts, _ = cv2.findContours(mb, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     hull_area = sum(cv2.contourArea(cv2.convexHull(c)) for c in cnts) or 1.0
     solidity = float(mb.sum() / hull_area)                 # holes / partial masks -> low
