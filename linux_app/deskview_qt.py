@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -47,7 +48,8 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _flags.strip()
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QUrl
 from PySide6.QtGui import (QAction, QColor, QGuiApplication, QImage, QPainter,
                            QPainterPath, QPen, QPixmap, QTransform)
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog,
+                               QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
                                QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPushButton, QScrollArea, QSizePolicy, QSlider,
                                QStackedWidget, QVBoxLayout, QWidget)
@@ -95,12 +97,79 @@ def api_get(path, timeout=6):
         return json.loads(r.read().decode())
 
 
+TOKEN = None      # from POST /api/auth/login; opening data needs it
+LAST_USER = ""
+LOGIN_ERRORS = {
+    "invalid credentials": "Wrong username or password.",
+    "bad request": "The service rejected the login request.",
+}
+
+
 def api_post(path, payload, timeout=120):
     data = json.dumps(payload).encode()
-    req = urllib.request.Request(API + path, data=data,
-                                 headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if TOKEN:
+        headers["Authorization"] = f"Bearer {TOKEN}"
+    req = urllib.request.Request(API + path, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
+
+
+def attempt_login(username, password):
+    """None on success (TOKEN is set), else the reason to show the operator."""
+    global TOKEN, LAST_USER
+    try:
+        r = api_post("/api/auth/login", {"username": username, "password": password}, timeout=30)
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode()).get("error", "")
+        except ValueError:
+            err = ""
+        return LOGIN_ERRORS.get(err, err or f"Login failed (HTTP {e.code})")
+    except Exception as e:
+        return f"Can't reach the service: {e}"
+    TOKEN, LAST_USER = r["token"], username
+    return None
+
+
+class LoginDialog(QDialog):
+    """Username and password together; a failed attempt keeps the window open with the reason."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Log in to open data")
+        self.user = QLineEdit(LAST_USER)
+        self.pw = QLineEdit()
+        self.pw.setEchoMode(QLineEdit.Password)
+        self.err = QLabel()
+        self.err.setStyleSheet("color: #e5534b;")
+        self.err.setWordWrap(True)
+        self.err.hide()
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Log in")
+        buttons.accepted.connect(self._submit)
+        buttons.rejected.connect(self.reject)
+        form = QFormLayout(self)
+        form.addRow("Username:", self.user)
+        form.addRow("Password:", self.pw)
+        form.addRow(self.err)
+        form.addRow(buttons)
+        (self.pw if LAST_USER else self.user).setFocus()
+
+    def _submit(self):
+        name = self.user.text().strip()
+        if not name:
+            return self._fail("Enter a username.")
+        error = attempt_login(name, self.pw.text())
+        if error is None:
+            return self.accept()
+        self._fail(error)
+        self.pw.clear()
+        self.pw.setFocus()
+
+    def _fail(self, text):
+        self.err.setText(text)
+        self.err.show()
 
 
 def api_delete(path):
@@ -869,15 +938,34 @@ class Deskview(QMainWindow):
         self.web_3d.setUrl(QUrl(f"{API}{url}?v={int(time.time() * 1000)}"))
         self.lbl_render.setText(f"{title} · job #{jid}")
 
+    def ensure_login(self):
+        return bool(TOKEN) or bool(LoginDialog(self).exec())
+
+    def _post_open(self, d):
+        """POST /api/open_dataset; one fresh login if the token lapsed (8 h) or the service restarted."""
+        global TOKEN
+        try:
+            return api_post("/api/open_dataset", {"path": d}, timeout=30)
+        except urllib.error.HTTPError as ex:
+            if ex.code != 401:
+                raise
+            TOKEN = None
+            if not self.ensure_login():
+                raise
+            return api_post("/api/open_dataset", {"path": d}, timeout=30)
+
     def open_folder(self):
         """pick a scene folder -- a folder of .raw12 frames is enough: the service
-        switches to it, decodes rgb + the normals catalog, the recorder reloads"""
+        switches to it, decodes rgb + the normals catalog, the recorder reloads.
+        Opening data needs a login (the service refuses it otherwise)."""
         global ROOT
+        if not self.ensure_login():
+            self.toast("login required to open data", bad=True); return
         d = QFileDialog.getExistingDirectory(self, "Open data folder (raw frames)", str(ROOT.parent))
         if not d:
             return
         try:
-            r = api_post("/api/open_dataset", {"path": d}, timeout=30)
+            r = self._post_open(d)
         except Exception as ex:
             self.toast(f"open failed: {ex}", bad=True); return
         ROOT = Path(r["path"])

@@ -12,6 +12,7 @@ viewer/scenes/
 street_video/
 inspector/jobs/
 inspector/inspector.db
+inspector/users.json
 demo_out/
 
 # dotnet build output

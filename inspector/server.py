@@ -21,6 +21,8 @@ from urllib.parse import urlparse, unquote
 
 import numpy as np
 
+import auth                     # inspector/auth.py: local accounts + session tokens
+
 HERE = Path(__file__).parent
 VIEWER = HERE.parent / "viewer"
 CLOUD_DIR = VIEWER / "scenes" / "street"           # dense cloud + poses (packed)
@@ -1984,7 +1986,24 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path); p = u.path
+        if p == "/api/auth/login":
+            if not auth.load_users():
+                return self._send(503, {"error": "no accounts yet: run "
+                                                 "python inspector/auth.py add-user <name>"})
+            try:
+                b = self._body()
+                name, password = b.get("username", ""), b.get("password", "")
+            except (ValueError, AttributeError):
+                return self._send(400, {"error": "bad request"})
+            if not (isinstance(name, str) and isinstance(password, str) and name and password):
+                return self._send(400, {"error": "bad request"})
+            if not auth.check_login(name, password):
+                return self._send(401, {"error": "invalid credentials"})
+            return self._send(200, {"token": auth.issue_token(name)})
         if p == "/api/open_dataset":
+            # opening or switching data needs a login; nothing else is gated yet
+            if auth.check_token(self.headers.get("Authorization")) is None:
+                return self._send(401, {"error": "unauthorized"})
             try:
                 return self._send(200, open_dataset(self._body().get("path", "")))
             except Exception as e:
