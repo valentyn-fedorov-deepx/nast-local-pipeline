@@ -77,6 +77,30 @@ data (poses from `inspector/scene_base`) so a fresh clone opens fine.
 * `NAST_DEGLARE_CROPS=0` feeds reconstruction from the original (non-deglared)
   frames.
 
+## Accounts and login
+
+Opening or switching data needs a login. Accounts are local to this machine
+and stored as PBKDF2 hashes in `inspector/users.json` (never committed, never
+the password itself).
+
+    python inspector/auth.py add-user <name>     # create or reset an account
+
+The Linux app asks for a login when **Open data folder** is clicked and keeps
+the session for 8 hours; restarting the service signs everyone out. Until an
+account exists, a login attempt says how to create one.
+
+Adding or changing a route, or a client call to the service? Read
+[`inspector/AUTH.md`](inspector/AUTH.md) first: most client calls do not send
+the login token yet, so gating a route the obvious way breaks them.
+
+What this does **not** cover yet:
+- Only opening data is gated. Once a folder is open, frames and scenes are
+  served without a check, and reconstruct / ROI / map building are not gated.
+- The Windows app (`deskview/`) opens folders itself, without the service, and
+  does not ask for a login yet.
+- The service listens on 127.0.0.1 over plain HTTP. If Mode 3 is ever reached
+  from another machine, it needs TLS in front first.
+
 ## A new recording
 
 The shipped street scene carries COLMAP poses. A fresh take has none, and the ROI
