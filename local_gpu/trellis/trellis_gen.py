@@ -14,8 +14,10 @@ On a CUDA out-of-memory the fusion retries with fewer views (5 -> 3 -> 1).
 Usage: python trellis_gen.py <out_stem> <crop1.png> [crop2.png ...]
 Env:   TRELLIS_DIR (the microsoft/TRELLIS checkout), TRELLIS_STEPS (default 20),
        TRELLIS_VRAM_CAP_GB (testing: cap this process at N GB to emulate a
-       smaller card), TRELLIS_KEEP_ON_GPU=1 (big cards: no offloading)
+       smaller card), TRELLIS_KEEP_ON_GPU=1 (big cards: no offloading),
+       TRELLIS_GLB_SECONDS (time budget of the mesh export, default 900; 0 = none)
 """
+import faulthandler
 import os
 os.environ.setdefault("ATTN_BACKEND", "xformers")
 os.environ.setdefault("SPCONV_ALGO", "native")
@@ -150,12 +152,28 @@ imageio.mimsave(f"{stem}_turn.mp4", video, fps=30)
 # to_glb simplifies, fills holes, parametrizes and bakes the gaussian look into
 # a texture; its vertices are y-up (v @ T) while save_ply is (v @ T.T) -- undo
 # the difference so the mesh sits exactly on the gaussians of <stem>.ply
+#
+# The step has a time budget. It can hang inside the GPU code (seen once: the
+# renderer stopped at view 18 of the 100 the texture is baked from and sat there
+# for eleven hours), and no Python exception reaches in there: a signal handler
+# only runs once the native call has returned. So the budget is kept by
+# faulthandler's watchdog, which writes where the process stands and ends it.
+# The gaussians are on disk by then; <stem>_mesh.pending tells trellis_local.sh
+# that the mesh step was the one that did not come back, and the object goes on
+# without the generated mesh (the service meshes the points itself when there
+# is no <stem>_mesh.ply).
+GLB_SECONDS = int(os.environ.get("TRELLIS_GLB_SECONDS", "900"))
+PENDING = f"{stem}_mesh.pending"
 try:
     if out.get("mesh") is None:
         raise RuntimeError("no TRELLIS mesh (decoder skipped)")
     import trimesh
     from trellis.utils import postprocessing_utils
+    open(PENDING, "w").close()
+    if GLB_SECONDS > 0:
+        faulthandler.dump_traceback_later(GLB_SECONDS, exit=True)
     glb = postprocessing_utils.to_glb(g, out["mesh"][0], simplify=0.95, texture_size=1024, verbose=False)
+    faulthandler.cancel_dump_traceback_later()
     glb.export(f"{stem}_mesh.glb")
     v = np.asarray(glb.vertices); v = np.stack([v[:, 0], -v[:, 1], -v[:, 2]], 1)
     trimesh.Trimesh(v, np.asarray(glb.faces), process=False).export(f"{stem}_mesh.ply")
@@ -164,5 +182,9 @@ try:
     print(f"mesh: {len(v)} verts, {len(glb.faces)} faces", flush=True)
 except Exception as e:
     print("mesh export failed:", repr(e), flush=True)
+finally:
+    faulthandler.cancel_dump_traceback_later()
+    if os.path.exists(PENDING):
+        os.remove(PENDING)
 mem("total")
 print("TRELLIS_GEN_DONE", stem, f"views={n}", flush=True)

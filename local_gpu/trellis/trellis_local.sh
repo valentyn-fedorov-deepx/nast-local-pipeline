@@ -42,10 +42,25 @@ export HF_HOME="${HF_HOME:-$ROOT/cache/hf}" TORCH_HOME="${TORCH_HOME:-$ROOT/cach
 export XDG_CACHE_HOME="$ROOT/cache" TRITON_CACHE_DIR="$ROOT/cache/triton"   # catch-all: nothing lands in ~/.cache
 "$PY" "$HERE/crop_enhance.py" "$J/crops" "$J/crops_enh"
 n=$(ls "$J"/crops_enh/*.png 2>/dev/null | wc -l)
+# The mesh export of the generator has a time budget and is ended from inside when it runs over (see trellis_gen.py):
+# asset_mesh.pending is then left behind. The gaussians are on disk by that point, so the object goes on without the
+# generated mesh instead of failing. Anything else that ends the generator is an error, as before.
+gen() {
+  local rc=0
+  rm -f "$J/asset_mesh.pending"
+  "$PY" "$HERE/trellis_gen.py" "$J/asset" "$@" || rc=$?
+  [ "$rc" = 0 ] && return 0
+  if [ -f "$J/asset_mesh.pending" ] && [ -s "$J/asset.ply" ]; then
+    rm -f "$J/asset_mesh.pending" "$J/asset_mesh.glb" "$J/asset_mesh.ply" "$J/asset_mesh_uv.npy" "$J/asset_mesh_tex.png"
+    echo "mesh export skipped: it did not finish within its time budget (generator rc=$rc); the object keeps its gaussians"
+    return 0
+  fi
+  return "$rc"
+}
 if [ "$n" -gt 0 ]; then
-  "$PY" "$HERE/trellis_gen.py" "$J/asset" "$J"/crops_enh/*.png
+  gen "$J"/crops_enh/*.png
 else
   echo "ENHANCE_EMPTY: falling back to raw crops"
-  "$PY" "$HERE/trellis_gen.py" "$J/asset" "$J"/crops/*.png
+  gen "$J"/crops/*.png
 fi
 echo "LOCAL_TRELLIS_DONE $J"
