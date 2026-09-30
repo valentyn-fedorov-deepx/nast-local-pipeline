@@ -136,6 +136,12 @@ def sam_mask(img, box, hints=None):
             main = max(ext, key=ext.get)
             grown = cv2.dilate((lab == main).astype(np.uint8), np.ones((15, 15), np.uint8))
             touch = set(np.unique(lab[grown > 0])) - {0}
+            if geo:
+                # a part that hangs beside the body (a banner on its arms, a mirror on its stalk) is its own piece
+                # of mask. Geometry put a point of the object on it, so it belongs, as long as it is close to the body
+                k = int(max(15, 0.08 * max(bx1 - bx0, by1 - by0))) | 1
+                near = cv2.dilate((lab == main).astype(np.uint8), np.ones((k, k), np.uint8))
+                touch |= {i for i in keep if (near[lab == i] > 0).any()}
             mask = np.isin(lab, list(touch)).astype(np.uint8) * 255
     return mask, float(best_s)
 # ---------------- SR ----------------
