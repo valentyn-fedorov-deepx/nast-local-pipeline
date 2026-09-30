@@ -10,6 +10,7 @@ Deps: stdlib + numpy (+ scipy optional). No web framework, so it just runs.
 import json
 import math
 import os
+import signal
 import sqlite3
 import sys
 import threading
@@ -194,23 +195,52 @@ def trellis_worker(wd):
     return cmd, None, f"the local GPU (WSL {_TRELLIS_WSL['distro']})"
 
 
+def kill_worker(proc, log_path):
+    """end a worker and everything it started. The worker is a shell that runs python: ending the shell alone leaves
+    the python on the GPU. On Linux the worker has its own process group; on Windows the tree under it is ended, and
+    for a worker that runs inside WSL the processes there are found by the job folder on their command line."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=30)
+            if _TRELLIS_WSL.get("distro"):
+                subprocess.run(["wsl", "-d", _TRELLIS_WSL["distro"], "--exec", "pkill", "-9", "-f", wsl_path(Path(log_path).parent)],
+                               capture_output=True, timeout=60)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
 def run_logged(cmd, log_path, upd, prefix, env=None, timeout=3600):
-    """run a worker, keep its whole output in log_path, mirror its milestone lines into the job detail"""
+    """run a worker, keep its whole output in log_path, mirror its milestone lines into the job detail.
+    The time limit is kept by a timer, not by the loop below: a worker that hangs prints nothing, and a loop that looks
+    at the clock only when a line arrives waits for ever (one job sat eleven hours under this one hour limit, holding
+    the GPU lock all the while)."""
     marks = ("SAM loaded", "SAM score", "max views", "kept", "inputs:", "[cond]", "[sparse structure]", "[slat]", "[decode",
              "out of memory", "mesh:", "TRELLIS_GEN_DONE", "ENHANCE_EMPTY", "Error", "error", "skipped")
-    t0 = time.time(); tail = []
+    tail = []; late = threading.Event()
     with open(log_path, "w", encoding="utf-8", errors="replace") as log:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                                errors="replace", env=env)
-        for line in proc.stdout:
-            log.write(line); log.flush()
-            s_ = line.strip(); tail = (tail + [s_])[-8:] if s_ else tail
-            if s_ and any(m in s_ for m in marks):
-                upd("running", f"{prefix}{s_[:150]}")
-            if time.time() - t0 > timeout:
-                proc.kill()
-                raise RuntimeError(f"the TRELLIS worker timed out after {timeout} s")
-        proc.wait()
+                                errors="replace", env=env, start_new_session=(os.name != "nt"))
+
+        def too_late():
+            late.set(); kill_worker(proc, log_path)
+        timer = threading.Timer(timeout, too_late); timer.daemon = True; timer.start()
+        try:
+            for line in proc.stdout:
+                log.write(line); log.flush()
+                s_ = line.strip(); tail = (tail + [s_])[-8:] if s_ else tail
+                if s_ and any(m in s_ for m in marks):
+                    upd("running", f"{prefix}{s_[:150]}")
+            proc.wait()
+        finally:
+            timer.cancel()
+    if late.is_set():
+        raise RuntimeError(f"the TRELLIS worker timed out after {timeout} s")
     if proc.returncode != 0:
         raise RuntimeError(f"TRELLIS worker rc={proc.returncode}: " + " | ".join(tail[-4:])[-500:])
 
