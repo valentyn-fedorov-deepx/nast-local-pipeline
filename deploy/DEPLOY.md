@@ -8,6 +8,13 @@ service self check). `nast_preflight.sh` runs before any of it and says whether 
 `git archive` of exactly that commit, checked file by file. Everything the kit adds on top is not in git by design: the
 VGGT-Omega weights, the TRELLIS environment and its weights. The steps below are the ones that were actually run.
 
+**Updating a machine that is already installed.** `update_mode3.sh` replaces the code only; `nast_demo/mode3_5090_patch` on
+Drive holds it next to the code snapshot. It stops the app and the service (a service left running keeps serving the old
+code, because `run.sh` reuses it), keeps a copy of the code it replaces, unpacks the new one, checks that the service that
+answers is the new one, and makes sure there is an account to log in with: accounts are local to the machine and not part
+of the code. It writes the commit into `VERSION` in the install folder, so which code a machine runs is read there
+(`head -1 ~/nast/nast-local-pipeline/VERSION`); the tag above is what the first install put on it.
+
 ---
 
 # NAST Mode 3 на новий ноут (Linux, RTX 5090): перенос і розгортання
@@ -111,6 +118,20 @@ VGGT-Omega weights, the TRELLIS environment and its weights. The steps below are
 5. В апці `Open data folder` -> `~/rec_2026_09_18/rig`, дочекатись `depth 4119/4119`, далі MAP -> `poses` і `build map` -> `A + B`.
 
 Кадри 18.09 мають ту саму байтову розкладку, що й 07.08 (2448x2048 RAW12, рядок 3680 байтів). Камери НЕ синхронізовані по кадрах, лише по годиннику (обидва звірені з UTC): пайплайн зв'язує їх за часовими мітками з імен, покадрове парування не потрібне. IMU і GNSS у записі порожні, вони не використовуються.
+
+## Оновлення вже встановленого ноута (тільки код)
+
+Коли змінився лише код (ваги й середовища ті самі), на ноуті досить однієї команди:
+
+       rclone copy gdrive:nast_demo/mode3_5090_patch ~/mode3_5090_patch && bash ~/mode3_5090_patch/update_mode3.sh
+
+Скрипт звіряє md5 архіву, закриває апку й сервіс (якщо сервіс лишити, `run.sh` підхопить його зі старим кодом), кладе копію коду, який замінює, у `~/nast/code_before_<час>.tar`, розпаковує новий, піднімає сервіс і перевіряє, що відповідає саме нова версія. Записи, карти, jobs, venv, ваги й акаунти не зачіпаються. Якщо саме йде job (пози, карта, об'єкт), скрипт зупиниться і попросить дочекатись; `FORCE=1 bash ~/mode3_5090_patch/update_mode3.sh` зупинить job.
+
+Акаунт. Кнопка `Open data folder` вимагає входу. Акаунти локальні для машини (`inspector/users.json`, у файлі лише солоний хеш пароля) і в код не входять, тому на кожній машині їх створюють окремо. Якщо акаунтів ще нема, скрипт оновлення в кінці сам спитає ім'я і пароль. Ще один акаунт або новий пароль:
+
+       cd ~/nast/nast-local-pipeline && venv/bin/python inspector/auth.py add-user <ім'я>
+
+Яка версія стоїть: `head -1 ~/nast/nast-local-pipeline/VERSION`. Відкат: `tar -xf ~/nast/code_before_<час>.tar -C ~/nast/nast-local-pipeline` і запустити апку знову.
 
 ## Якщо щось пішло не так
 
